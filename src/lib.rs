@@ -75,7 +75,9 @@
 mod client;
 mod error;
 mod ledger;
+mod sim;
 
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
 pub use ledger::{LedgerClient, LedgerEntry, VerifyResult};
+pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};

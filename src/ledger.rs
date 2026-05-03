@@ -55,6 +55,15 @@ pub struct LedgerEntry {
     /// written under.
     #[serde(default = "default_chain_version")]
     pub chain_version: i64,
+    /// Origin tag the proxy stamped on the forensic event when the
+    /// `x-warden-source` request header was set. `Some("simulator")` for
+    /// warden-simulator-driven traffic, `None` for real agents and for
+    /// rows produced by publishers that don't yet stamp the field
+    /// (policy engine, HIL — these inherit the request's source via
+    /// `correlation_id` join, not via this column). UI affordance, not
+    /// a security claim — see the warning in `warden_ledger`.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 fn default_chain_version() -> i64 {
