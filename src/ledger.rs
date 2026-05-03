@@ -49,7 +49,7 @@ pub struct LedgerEntry {
     pub entry_hash: String,
     #[serde(default)]
     pub correlation_id: Option<String>,
-    /// Format the row's `entry_hash` was computed under (WG-302). Old
+    /// Format the row's `entry_hash` was computed under. Old
     /// rows don't carry the field on the wire — `default_chain_version()`
     /// resolves it to `1`, matching what those rows were actually
     /// written under.
@@ -246,7 +246,7 @@ mod tests {
         });
         let parsed: LedgerEntry = serde_json::from_value(pre_correlation).unwrap();
         assert!(parsed.correlation_id.is_none());
-        // chain_version defaults to 1 when absent — pre-WG-302 rows
+        // chain_version defaults to 1 when absent — legacy rows
         // were all written under v1.
         assert_eq!(parsed.chain_version, 1);
     }
