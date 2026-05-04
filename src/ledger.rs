@@ -145,6 +145,25 @@ impl LedgerClient {
         self
     }
 
+    /// Read-only access to the configured base URL. Exposed so a
+    /// caller can construct streaming requests (e.g. SSE) that don't
+    /// fit the JSON-only `get_json` path the rest of this client uses
+    /// — the warden-console live-tail proxy is the first such caller.
+    /// Treat it as wire-level: the SDK still owns canonical request
+    /// shaping, but a streaming response can't ride through the
+    /// `get_json` decode pipeline.
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
+    /// Borrow the inner `reqwest::Client`. Same SSE-streaming
+    /// rationale as `base_url` — the SDK doesn't yet wrap streaming
+    /// responses, but we want a single shared HTTP client (connection
+    /// pool, TLS config) across SDK calls and ad-hoc streams.
+    pub fn http_client(&self) -> &Client {
+        &self.http
+    }
+
     /// `GET /audit/correlation/{id}` — every chain entry sharing this
     /// correlation id, oldest first. Empty vec on an unknown id.
     pub async fn audit_correlation(
