@@ -59,6 +59,13 @@ pub struct SimStats {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SimStatus {
     pub traffic_multiplier: f64,
+    /// Whether the simulator is currently firing requests. Older
+    /// simulator builds (pre run-flag) didn't emit this field;
+    /// `#[serde(default)]` resolves to `false` (paused) for those.
+    /// That matches the new boot default and keeps the console safe
+    /// against version skew during a rolling upgrade.
+    #[serde(default)]
+    pub running: bool,
     pub agents: Vec<SimAgentRecord>,
     pub stats: SimStats,
 }
@@ -126,6 +133,25 @@ impl SimClient {
         }
     }
 
+    /// `POST /running` — flip the simulator's start/stop flag.
+    /// Returns the post-update [`SimStatus`] so the caller can render
+    /// the new badge without a follow-up `status()` call.
+    pub async fn set_running(&self, running: bool) -> Result<SimStatus, WardenError> {
+        let endpoint = self
+            .base_url
+            .join("running")
+            .map_err(|e| WardenError::InvalidConfig(format!("join running: {e}")))?;
+        let body = serde_json::json!({ "running": running });
+        let resp = self.http.post(endpoint).json(&body).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+        if status == StatusCode::OK {
+            serde_json::from_str(&raw).map_err(WardenError::Decode)
+        } else {
+            Err(WardenError::Server { status, body: raw })
+        }
+    }
+
     /// `POST /agents` — mint and spawn `count` transient agents of
     /// the named persona. Returns the CNs of the spawned agents on
     /// success.
@@ -165,6 +191,7 @@ mod tests {
     fn sim_status_decodes_canonical_payload() {
         let raw = r#"{
             "traffic_multiplier": 2.5,
+            "running": true,
             "agents": [
                 {"cn": "cs-bot-1", "persona": "cs-bot", "rate_lambda": 0.3, "transient": false},
                 {"cn": "cs-bot-t1", "persona": "cs-bot", "rate_lambda": 0.3, "transient": true}
@@ -177,11 +204,27 @@ mod tests {
         }"#;
         let parsed: SimStatus = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.traffic_multiplier, 2.5);
+        assert!(parsed.running);
         assert_eq!(parsed.agents.len(), 2);
         assert!(!parsed.agents[0].transient);
         assert!(parsed.agents[1].transient);
         assert_eq!(parsed.stats.sent, 100);
         assert_eq!(parsed.stats.p50_ms, Some(18.0));
+    }
+
+    #[test]
+    fn sim_status_running_defaults_false_when_field_missing() {
+        // Pre run-flag simulator builds don't emit `running`. The
+        // `#[serde(default)]` resolves it to `false` so the console's
+        // Start/Stop button shows the safe (paused) state until the
+        // simulator is actually upgraded.
+        let raw = r#"{
+            "traffic_multiplier": 1.0,
+            "agents": [],
+            "stats": {"sent": 0, "ok": 0, "denied": 0, "error": 0, "success_pct": 0.0, "p50_ms": null, "p95_ms": null}
+        }"#;
+        let parsed: SimStatus = serde_json::from_str(raw).unwrap();
+        assert!(!parsed.running);
     }
 
     #[test]
