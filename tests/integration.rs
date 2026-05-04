@@ -29,6 +29,9 @@ use tokio::sync::oneshot;
 
 use warden_sdk::{Auth, LedgerClient, WardenClient, WardenError};
 
+use axum::extract::Query;
+use std::collections::HashMap;
+
 /// One-shot fixture: spawn `router` on a fresh port; return the URL
 /// (e.g. `http://127.0.0.1:54321`) plus a sender that drops the
 /// server when the test ends.
@@ -319,5 +322,91 @@ async fn audit_correlation_percent_encodes_path() {
     let ledger = LedgerClient::new(&url).unwrap();
     let rows = ledger.audit_correlation("a/b").await.expect("audit");
     assert!(rows.is_empty());
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn audit_agent_paged_forwards_limit_and_offset() {
+    // Server captures the query string into a HashMap so we can assert
+    // the SDK puts the right values on the wire. Returning a constant
+    // body keeps the test focused on URL construction.
+    let app = Router::new().route(
+        "/audit/{agent_id}",
+        get(|Path(_aid): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
+            assert_eq!(q.get("limit").map(String::as_str), Some("25"));
+            assert_eq!(q.get("offset").map(String::as_str), Some("50"));
+            Json(json!([])).into_response()
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+
+    let ledger = LedgerClient::new(&url).unwrap();
+    let rows = ledger
+        .audit_agent_paged("demo-bot", 25, 50)
+        .await
+        .expect("paged");
+    assert!(rows.is_empty());
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn audit_agent_count_decodes_count_field() {
+    let app = Router::new().route(
+        "/audit/{agent_id}/count",
+        get(|Path(aid): Path<String>| async move {
+            assert_eq!(aid, "demo-bot");
+            Json(json!({ "count": 1234 }))
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+
+    let ledger = LedgerClient::new(&url).unwrap();
+    let n = ledger.audit_agent_count("demo-bot").await.expect("count");
+    assert_eq!(n, 1234);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn list_exports_decodes_export_records() {
+    // Mirror the ledger's GET /exports payload — newest-first array
+    // of ExportRecord objects. Confirms the wire-mirror struct on the
+    // SDK side decodes cleanly against a real HTTP response.
+    let app = Router::new().route(
+        "/exports",
+        get(|| async {
+            Json(json!([
+                {
+                    "snapshot_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "written_at": "2026-05-04T08:00:00Z",
+                    "data_uri": "file:///snap/v2.parquet",
+                    "manifest_uri": "file:///snap/v2.manifest.json",
+                    "data_sha256": "f".repeat(64),
+                    "byte_size": 2048,
+                    "row_count": 100,
+                    "seq_lo": 51,
+                    "seq_hi": 150
+                },
+                {
+                    "snapshot_id": "660f9511-f3ac-52e5-b827-557766551111",
+                    "written_at": "2026-05-03T08:00:00Z",
+                    "data_uri": "file:///snap/v1.parquet",
+                    "manifest_uri": "file:///snap/v1.manifest.json",
+                    "data_sha256": "e".repeat(64),
+                    "byte_size": 1024,
+                    "row_count": 50,
+                    "seq_lo": 1,
+                    "seq_hi": 50
+                }
+            ]))
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+
+    let ledger = LedgerClient::new(&url).unwrap();
+    let rows = ledger.list_exports().await.expect("exports");
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].row_count, 100);
+    assert_eq!(rows[0].seq_lo, 51);
+    assert_eq!(rows[1].row_count, 50);
     drop(shutdown);
 }
