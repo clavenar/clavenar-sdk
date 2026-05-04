@@ -66,6 +66,15 @@ pub struct SimStatus {
     /// against version skew during a rolling upgrade.
     #[serde(default)]
     pub running: bool,
+    /// HIL auto-decision sidecar state. `None` means the sidecar
+    /// wasn't configured at boot (no `--hil-url` on the simulator) —
+    /// the console renders an "off" placeholder and disables the
+    /// toggle. `Some(true/false)` is enabled / paused. The simulator
+    /// emits this with `serde(skip_serializing_if = is_none)`, so
+    /// older simulator payloads omit the field entirely; `serde(default)`
+    /// here fills it back in as `None`.
+    #[serde(default)]
+    pub auto_decide: Option<bool>,
     pub agents: Vec<SimAgentRecord>,
     pub stats: SimStats,
 }
@@ -152,6 +161,27 @@ impl SimClient {
         }
     }
 
+    /// `POST /auto-decide` — pause or resume the simulator's HIL
+    /// auto-decision sidecar. Returns the post-update [`SimStatus`].
+    /// When the simulator wasn't booted with `--hil-url`, the server
+    /// answers 409 Conflict and this surfaces as
+    /// [`WardenError::Server`] with the explanation in the body.
+    pub async fn set_auto_decide(&self, enabled: bool) -> Result<SimStatus, WardenError> {
+        let endpoint = self
+            .base_url
+            .join("auto-decide")
+            .map_err(|e| WardenError::InvalidConfig(format!("join auto-decide: {e}")))?;
+        let body = serde_json::json!({ "enabled": enabled });
+        let resp = self.http.post(endpoint).json(&body).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+        if status == StatusCode::OK {
+            serde_json::from_str(&raw).map_err(WardenError::Decode)
+        } else {
+            Err(WardenError::Server { status, body: raw })
+        }
+    }
+
     /// `POST /agents` — mint and spawn `count` transient agents of
     /// the named persona. Returns the CNs of the spawned agents on
     /// success.
@@ -192,6 +222,7 @@ mod tests {
         let raw = r#"{
             "traffic_multiplier": 2.5,
             "running": true,
+            "auto_decide": true,
             "agents": [
                 {"cn": "cs-bot-1", "persona": "cs-bot", "rate_lambda": 0.3, "transient": false},
                 {"cn": "cs-bot-t1", "persona": "cs-bot", "rate_lambda": 0.3, "transient": true}
@@ -205,11 +236,27 @@ mod tests {
         let parsed: SimStatus = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.traffic_multiplier, 2.5);
         assert!(parsed.running);
+        assert_eq!(parsed.auto_decide, Some(true));
         assert_eq!(parsed.agents.len(), 2);
         assert!(!parsed.agents[0].transient);
         assert!(parsed.agents[1].transient);
         assert_eq!(parsed.stats.sent, 100);
         assert_eq!(parsed.stats.p50_ms, Some(18.0));
+    }
+
+    #[test]
+    fn sim_status_auto_decide_defaults_none_when_field_missing() {
+        // Simulator omits `auto_decide` when the sidecar isn't
+        // configured (skip_serializing_if). Older builds didn't emit
+        // it at all. Both shapes deserialize to `None` here.
+        let raw = r#"{
+            "traffic_multiplier": 1.0,
+            "running": false,
+            "agents": [],
+            "stats": {"sent": 0, "ok": 0, "denied": 0, "error": 0, "success_pct": 0.0, "p50_ms": null, "p95_ms": null}
+        }"#;
+        let parsed: SimStatus = serde_json::from_str(raw).unwrap();
+        assert_eq!(parsed.auto_decide, None);
     }
 
     #[test]
