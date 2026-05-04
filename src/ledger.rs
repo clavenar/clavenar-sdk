@@ -1,16 +1,27 @@
 //! Async client for the ledger's audit and verify endpoints.
 //!
-//! Three calls cover the operator's reconstruction surface:
+//! Six calls cover the operator's reconstruction surface:
 //!
 //! * [`LedgerClient::audit_correlation`] — the per-request join, used
 //!   to pull every layer's row for a single original request. Each
 //!   successful request lands two rows in the chain (proxy + policy);
 //!   this is what stitches them.
 //! * [`LedgerClient::audit_agent`] — every row in the chain that
-//!   names a given agent CN. Useful for compliance reviews.
+//!   names a given agent CN, oldest first. Full-chain fetch — fine
+//!   for compliance batch tooling.
+//! * [`LedgerClient::audit_agent_paged`] — newest-first
+//!   `?limit=&offset=` slice of the same data. Used by UI callers so
+//!   memory scales with `per_page`, not chain depth.
+//! * [`LedgerClient::audit_agent_count`] — total chain rows for the
+//!   agent; pairs with `audit_agent_paged` to drive a paginated UI's
+//!   total-pages count without a full row read.
 //! * [`LedgerClient::verify`] — recompute every hash and check that
 //!   the chain links up. Returns a [`VerifyResult`] mirroring what the
 //!   server emits.
+//! * [`LedgerClient::list_exports`] — bookkeeping list of cold-tier
+//!   snapshots written so far (Parquet + manifest pointers). The
+//!   console renders this as a browse-able table so operators don't
+//!   have to `curl` the ledger directly.
 //!
 //! # Rust idioms in this file (additions to lib.rs's list)
 //!
@@ -68,6 +79,29 @@ pub struct LedgerEntry {
 
 fn default_chain_version() -> i64 {
     1
+}
+
+/// One bookkeeping row from the ledger's `exports` table. Mirrors the
+/// server-side `warden_ledger::export::ExportRecord`. Each row records
+/// one cold-tier snapshot the export pipeline wrote out (Parquet data
+/// blob + Iceberg manifest), with enough pointers for an operator to
+/// fetch the artifacts and verify the SHA-256 themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ExportRecord {
+    pub snapshot_id: Uuid,
+    pub written_at: DateTime<Utc>,
+    pub data_uri: String,
+    pub manifest_uri: String,
+    pub data_sha256: String,
+    /// Size of the Parquet blob, bytes. `usize` mirrors the server.
+    pub byte_size: usize,
+    /// How many ledger rows landed in this snapshot.
+    pub row_count: usize,
+    /// First / last ledger `seq` covered by the snapshot. Useful when
+    /// reconciling against the live chain — `[seq_lo, seq_hi]` is the
+    /// inclusive range that's safe to prune from the hot tier.
+    pub seq_lo: i64,
+    pub seq_hi: i64,
 }
 
 /// Outcome of a chain re-hash. Mirrors `warden_ledger::VerifyResult`.
@@ -139,11 +173,64 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    /// `GET /audit/{agent_id}?limit=N&offset=M` — newest-first slice
+    /// of size `N` skipping `M` rows. Backward-compatible companion to
+    /// [`audit_agent`]: the legacy ASC-ordered, full-chain shape stays
+    /// addressable via that method, while UI callers (the warden-console
+    /// audit page) hit this one so memory and bandwidth scale with
+    /// `per_page` instead of chain depth.
+    pub async fn audit_agent_paged(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        offset: usize,
+    ) -> Result<Vec<LedgerEntry>, WardenError> {
+        // Plain query-string concatenation. limit/offset are integers;
+        // no percent-encoding needed for the values themselves.
+        let path = format!(
+            "audit/{}?limit={}&offset={}",
+            percent_encode(agent_id),
+            limit,
+            offset,
+        );
+        self.get_json(&path).await
+    }
+
+    /// `GET /audit/{agent_id}/count` — total chain rows naming
+    /// `agent_id`. The console uses this with `audit_agent_paged` to
+    /// compute total-pages without paying for the full row read. Cheap
+    /// (`COUNT(*)` against the indexed column).
+    pub async fn audit_agent_count(&self, agent_id: &str) -> Result<usize, WardenError> {
+        // Tiny one-field response shape. Mirror it inline rather than
+        // exposing a `pub struct Count {...}` — the field is incidental
+        // to this single call's wire contract.
+        #[derive(Deserialize)]
+        struct Wrap {
+            count: i64,
+        }
+        let path = format!("audit/{}/count", percent_encode(agent_id));
+        let w: Wrap = self.get_json(&path).await?;
+        // SQLite `COUNT(*)` can't return a negative — cast safely. The
+        // `as usize` is lossless for positive i64 on 64-bit hosts; on
+        // 32-bit hosts SQLite would have to host >2B chain rows for
+        // truncation, which isn't a realistic concern.
+        Ok(w.count.max(0) as usize)
+    }
+
     /// `GET /verify` — re-hash every entry and check the chain. Cheap
     /// for a few thousand entries; not intended to be called on a
     /// hot path.
     pub async fn verify(&self) -> Result<VerifyResult, WardenError> {
         self.get_json("verify").await
+    }
+
+    /// `GET /exports` — bookkeeping list of cold-tier snapshots, newest
+    /// first. Empty vec when the export sweeper has never run (or when
+    /// the sink isn't configured — the table exists either way, the
+    /// rows are just absent). Cheap call: it's a `SELECT *` over what
+    /// is typically a small bookkeeping table.
+    pub async fn list_exports(&self) -> Result<Vec<ExportRecord>, WardenError> {
+        self.get_json("exports").await
     }
 
     /// Internal: GET `<base_url>/<path>` and decode JSON. Returns
@@ -301,6 +388,36 @@ mod tests {
         let parsed: VerifyResult = serde_json::from_value(invalid).unwrap();
         assert!(!parsed.valid);
         assert_eq!(parsed.first_invalid_seq, Some(7));
+    }
+
+    #[test]
+    fn export_record_round_trips_through_json() {
+        // Mirrors what the ledger's `GET /exports` emits per row. The
+        // mirror struct on this side has to track the server's field
+        // order/names exactly — drift here turns into silent decode
+        // failures on the console's exports page.
+        let server_shape = serde_json::json!({
+            "snapshot_id": "550e8400-e29b-41d4-a716-446655440000",
+            "written_at": "2026-05-02T12:34:56Z",
+            "data_uri": "file:///snapshots/abc.parquet",
+            "manifest_uri": "file:///snapshots/abc.manifest.json",
+            "data_sha256": "f".repeat(64),
+            "byte_size": 1024,
+            "row_count": 42,
+            "seq_lo": 1,
+            "seq_hi": 42
+        });
+        let parsed: ExportRecord = serde_json::from_value(server_shape).unwrap();
+        assert_eq!(parsed.row_count, 42);
+        assert_eq!(parsed.byte_size, 1024);
+        assert_eq!(parsed.seq_lo, 1);
+        assert_eq!(parsed.seq_hi, 42);
+        // Round-trip through serde to catch field-name drift in either
+        // direction (server adds a field — we'd silently drop it; we
+        // rename one — round-trip blows up).
+        let again = serde_json::to_value(&parsed).unwrap();
+        let again_back: ExportRecord = serde_json::from_value(again).unwrap();
+        assert_eq!(again_back, parsed);
     }
 
     #[test]
