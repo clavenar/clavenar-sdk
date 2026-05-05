@@ -75,6 +75,60 @@ pub struct LedgerEntry {
     /// a security claim — see the warning in `warden_ledger`.
     #[serde(default)]
     pub source: Option<String>,
+    /// Chain v3 — Warden Agent Onboarding lifecycle event kind
+    /// (ONBOARDING.md §7.2). `None` on every v1/v2 row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_kind: Option<String>,
+    /// v3 — Tenant the lifecycle row belongs to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<String>,
+    /// v3 — Registered name of the agent the event applied to.
+    /// Distinct from `agent_id` because v3 reuses the column for the
+    /// `agents` table uuidv7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_name: Option<String>,
+    /// v3 — OIDC `sub` of the human who triggered the lifecycle
+    /// event.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_sub: Option<String>,
+    /// v3 — OIDC issuer string (e.g. `okta`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_idp: Option<String>,
+    /// v3 — `sha256(canonical_payload_json)`. The bytes themselves
+    /// live in the `entry_payloads` sibling table; `LifecycleRow`
+    /// joins them onto the row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload_sha256: Option<String>,
+    /// Warden-issued signature over the v2 hashable. Carried as the
+    /// Vault Transit envelope (`vault:v<N>:<base64>`); the verifier
+    /// (P3 #14) parses the envelope and checks against the JWKS-served
+    /// public key for `key_id`. Hashable on v2 — tampering with the
+    /// signature itself breaks the chain hash, so an attacker can't
+    /// strip the signature without invalidating the row. Also set on
+    /// v3 rows, signs over the lifecycle subset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<String>,
+    /// JWKS lookup hint for verifying [`Self::signature`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_id: Option<String>,
+    /// v2 — SPIFFE id of the agent that produced this row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_spiffe: Option<String>,
+}
+
+/// Lifecycle row + the per-event-kind payload bytes that the chain
+/// row's `payload_sha256` commits to. Mirrors
+/// `warden_ledger::LifecycleRow`. Powers the console's per-agent
+/// timeline (ONBOARDING.md §10.1).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LifecycleRow {
+    #[serde(flatten)]
+    pub entry: LedgerEntry,
+    /// `None` when the chain row is well-formed but the
+    /// `entry_payloads` row is missing — surfaced rather than
+    /// silently dropped so the console can render an explicit
+    /// "payload missing" affordance.
+    pub payload: Option<serde_json::Value>,
 }
 
 fn default_chain_version() -> i64 {
@@ -241,6 +295,26 @@ impl LedgerClient {
     /// hot path.
     pub async fn verify(&self) -> Result<VerifyResult, WardenError> {
         self.get_json("verify").await
+    }
+
+    /// `GET /audit/agent/{tenant}/{agent_id}/lifecycle` — chain v3
+    /// rows for a registered agent, joined with the per-kind
+    /// payload bytes. Ordered chain-ascending so the timeline reads
+    /// "registered → suspended → unsuspended → …". `agent_id` is
+    /// the `agents` table's uuidv7 (distinct from the audit
+    /// endpoints' CN-shaped agent_id). Empty vec when the chain has
+    /// no v3 rows for the agent.
+    pub async fn lifecycle_for_agent(
+        &self,
+        tenant: &str,
+        agent_id: &str,
+    ) -> Result<Vec<LifecycleRow>, WardenError> {
+        let path = format!(
+            "audit/agent/{}/{}/lifecycle",
+            percent_encode(tenant),
+            percent_encode(agent_id),
+        );
+        self.get_json(&path).await
     }
 
     /// `GET /exports` — bookkeeping list of cold-tier snapshots, newest
@@ -455,5 +529,126 @@ mod tests {
         assert!(!parsed.valid);
         assert!(parsed.first_invalid_seq.is_none());
         assert_eq!(parsed.unsupported_chain_version, Some(2));
+    }
+
+    #[test]
+    fn lifecycle_row_decodes_v3_fields_with_payload_join() {
+        // Mock the ledger's GET /audit/agent/{tenant}/{agent_id}/lifecycle
+        // shape — flattened LedgerEntry plus a sibling `payload` Value.
+        // Verify the v3-only fields (event_kind, tenant, agent_name,
+        // actor_sub, actor_idp, payload_sha256) all decode through and
+        // the payload object is preserved verbatim.
+        let body = serde_json::json!({
+            "id": "01940000-0000-7000-8000-000000000000",
+            "timestamp": "2026-05-05T14:30:00Z",
+            "agent_id": "01HW-AGENT-uuid",
+            "method": "agent.registered",
+            "intent_category": "Lifecycle",
+            "authorized": true,
+            "reasoning": "",
+            "policy_decision": null,
+            "seq": 1,
+            "prev_hash": "00".repeat(32),
+            "entry_hash": "ab".repeat(32),
+            "chain_version": 3,
+            "event_kind": "agent.registered",
+            "tenant": "acme",
+            "agent_name": "support-bot-3",
+            "actor_sub": "user:alice@acme.com",
+            "actor_idp": "okta",
+            "payload_sha256": "cd".repeat(32),
+            "signature": "vault:v1:ZmFrZQ==",
+            "key_id": "warden-identity:v1",
+            "payload": {
+                "owner_team": "payments",
+                "scope_envelope": ["mcp:read:tickets"]
+            }
+        });
+        let row: LifecycleRow = serde_json::from_value(body).unwrap();
+        assert_eq!(row.entry.chain_version, 3);
+        assert_eq!(row.entry.event_kind.as_deref(), Some("agent.registered"));
+        assert_eq!(row.entry.tenant.as_deref(), Some("acme"));
+        assert_eq!(row.entry.agent_name.as_deref(), Some("support-bot-3"));
+        let payload = row.payload.expect("payload joined in");
+        assert_eq!(payload["owner_team"], "payments");
+    }
+
+    #[tokio::test]
+    async fn lifecycle_for_agent_round_trips_against_mock() {
+        use axum::{routing::get, Router};
+        use tokio::sync::oneshot;
+
+        // Mock the ledger endpoint with two canned v3 rows.
+        let app = Router::new().route(
+            "/audit/agent/{tenant}/{agent_id}/lifecycle",
+            get(|axum::extract::Path((tenant, agent_id)): axum::extract::Path<(String, String)>| async move {
+                axum::Json(serde_json::json!([
+                    {
+                        "id": "01940000-0000-7000-8000-000000000001",
+                        "timestamp": "2026-05-05T14:00:00Z",
+                        "agent_id": agent_id,
+                        "method": "agent.registered",
+                        "intent_category": "Lifecycle",
+                        "authorized": true,
+                        "reasoning": "",
+                        "policy_decision": null,
+                        "seq": 1,
+                        "prev_hash": "00".repeat(32),
+                        "entry_hash": "ab".repeat(32),
+                        "chain_version": 3,
+                        "event_kind": "agent.registered",
+                        "tenant": tenant,
+                        "agent_name": "support-bot-3",
+                        "actor_sub": "user:alice@acme.com",
+                        "actor_idp": "okta",
+                        "payload_sha256": "cd".repeat(32),
+                        "payload": { "owner_team": "payments" }
+                    },
+                    {
+                        "id": "01940000-0000-7000-8000-000000000002",
+                        "timestamp": "2026-05-05T14:30:00Z",
+                        "agent_id": agent_id,
+                        "method": "agent.suspended",
+                        "intent_category": "Lifecycle",
+                        "authorized": true,
+                        "reasoning": "",
+                        "policy_decision": null,
+                        "seq": 2,
+                        "prev_hash": "ab".repeat(32),
+                        "entry_hash": "ef".repeat(32),
+                        "chain_version": 3,
+                        "event_kind": "agent.suspended",
+                        "tenant": tenant,
+                        "agent_name": "support-bot-3",
+                        "actor_sub": "user:alice@acme.com",
+                        "actor_idp": "okta",
+                        "payload_sha256": "01".repeat(32),
+                        "payload": { "state_before": "active", "state_after": "suspended" }
+                    }
+                ]))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let rows = client
+            .lifecycle_for_agent("acme", "01HW-AGENT-uuid")
+            .await
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].entry.event_kind.as_deref(), Some("agent.registered"));
+        assert_eq!(rows[1].entry.event_kind.as_deref(), Some("agent.suspended"));
+        assert_eq!(rows[1].payload.as_ref().unwrap()["state_after"], "suspended");
+        let _ = kill_tx.send(());
     }
 }
