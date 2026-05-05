@@ -75,6 +75,15 @@ pub struct LedgerEntry {
     /// a security claim — see the warning in `warden_ledger`.
     #[serde(default)]
     pub source: Option<String>,
+    /// P4 rejection / annotation signal (ONBOARDING.md §6.3 vocabulary):
+    /// `unregistered_agent`, `scope_outside_envelope`,
+    /// `yellow_scope_outside_envelope`, `agent_suspended`,
+    /// `agent_decommissioned`, `attestation_kind_not_accepted`,
+    /// `grant_expired`. `None` on every row that isn't gate-relevant.
+    /// Drives the console's `/audit` filter chip and the "Register…"
+    /// deep link on unregistered_agent rows.
+    #[serde(default)]
+    pub signal: Option<String>,
     /// Chain v3 — Warden Agent Onboarding lifecycle event kind
     /// (ONBOARDING.md §7.2). `None` on every v1/v2 row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
