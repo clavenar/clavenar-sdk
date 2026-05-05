@@ -78,7 +78,10 @@ mod error;
 mod ledger;
 mod sim;
 
-pub use agents::{AgentListFilter, AgentRecord, AgentState, AgentsClient};
+pub use agents::{
+    create_request_matches, AgentCreated, AgentListFilter, AgentRecord, AgentState, AgentsClient,
+    CreateAgentRequest, EnvelopeRequest, LifecycleRequest, LifecycleResponse,
+};
 pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
 pub use ledger::{ExportRecord, LedgerClient, LedgerEntry, VerifyResult};
