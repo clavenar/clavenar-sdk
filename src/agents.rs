@@ -2,9 +2,11 @@
 //!
 //! Mirrors the `warden-identity` server-side handlers in
 //! `agents.rs`: every call here corresponds 1:1 with a route there.
-//! P1 ships read endpoints only — `list` and `get`. Write endpoints
-//! (`create`, `suspend`, …) land in P2 alongside the identity-side
-//! lifecycle handlers.
+//! P2 ships the full lifecycle surface — `list`, `get`, `create`,
+//! `suspend` / `unsuspend` / `decommission`, `envelope_narrow` /
+//! `envelope_widen`, `attestation_kinds`, `transfer_owner_team`,
+//! `set_description`, plus the helper `find_by_name` used by
+//! `wardenctl agents create --if-absent` for idempotent IaC patterns.
 //!
 //! ## Auth model
 //!
@@ -102,6 +104,105 @@ pub struct AgentListFilter {
     pub owner_team: Option<String>,
 }
 
+/// Spec §5.2 — `POST /agents` request body. Borrowed-string fields
+/// so the CLI / console can pass slices off the parsed args without
+/// allocating; `Vec<String>` for the multi-value envelopes for the
+/// same reason (`Cow<'_, [String]>` would let callers pass slices,
+/// but multi-value clap args produce owned vecs anyway).
+#[derive(Debug, Clone, Serialize)]
+pub struct CreateAgentRequest<'a> {
+    pub tenant: &'a str,
+    pub agent_name: &'a str,
+    pub owner_team: &'a str,
+    #[serde(default)]
+    pub scope_envelope: Vec<String>,
+    #[serde(default)]
+    pub yellow_envelope: Vec<String>,
+    #[serde(default)]
+    pub attestation_kinds: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<&'a str>,
+}
+
+/// Response shape for `POST /agents`: the registered record plus the
+/// `spiffe_id_pattern` field. `flatten` mirrors the server's
+/// `CreateAgentResponse` so callers can read `created.id` /
+/// `created.state` directly off the top level.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AgentCreated {
+    #[serde(flatten)]
+    pub record: AgentRecord,
+    pub spiffe_id_pattern: String,
+}
+
+/// Body for `POST /agents/{id}/envelope/narrow|widen`. Caller
+/// supplies the *full new envelope* — the server diffs against the
+/// current row and rejects on direction violation. Borrowed slices
+/// to match `CreateAgentRequest`.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnvelopeRequest<'a> {
+    pub scope_envelope: &'a [String],
+    pub yellow_envelope: &'a [String],
+}
+
+/// Request shape for the suspend / unsuspend / decommission
+/// endpoints. `reason` is optional per spec §5.2.
+#[derive(Debug, Clone, Serialize)]
+pub struct LifecycleRequest<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'a str>,
+}
+
+/// Response shape for the three state-machine endpoints — spec §5.2
+/// "return `{ state, state_changed_at }`".
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct LifecycleResponse {
+    pub state: AgentState,
+    pub state_changed_at: String,
+}
+
+/// Compare a [`CreateAgentRequest`] against an existing
+/// [`AgentRecord`] for the `wardenctl agents create --if-absent`
+/// idempotency check. Returns `true` when the request would land the
+/// row already in place (envelopes equal as sets, owner_team and
+/// attestation_kinds match) — the CLI exits 0 in that case rather
+/// than re-POSTing. Set semantics: order doesn't matter, duplicates
+/// don't matter (the server canonicalizes both into sorted JSON
+/// arrays in storage).
+pub fn create_request_matches(req: &CreateAgentRequest<'_>, record: &AgentRecord) -> bool {
+    if req.tenant != record.tenant
+        || req.agent_name != record.agent_name
+        || req.owner_team != record.owner_team
+    {
+        return false;
+    }
+    if !same_set(&req.scope_envelope, &record.scope_envelope)
+        || !same_set(&req.yellow_envelope, &record.yellow_envelope)
+        || !same_set(&req.attestation_kinds, &record.attestation_kinds_accepted)
+    {
+        return false;
+    }
+    // Description is intentionally not part of idempotency check —
+    // operators routinely tweak descriptions without wanting the IaC
+    // job to re-trip a 409. The CLI surfaces description as a
+    // separate `wardenctl agents description` step.
+    true
+}
+
+/// Order-insensitive, duplicate-insensitive equality on
+/// `Vec<String>`. Sorted-clone comparison rather than a `HashSet`
+/// pass to keep the helper allocation-light for the typical 1–10
+/// element envelopes — both list_a and list_b are short.
+fn same_set(a: &[String], b: &[String]) -> bool {
+    let mut a: Vec<&str> = a.iter().map(String::as_str).collect();
+    let mut b: Vec<&str> = b.iter().map(String::as_str).collect();
+    a.sort_unstable();
+    a.dedup();
+    b.sort_unstable();
+    b.dedup();
+    a == b
+}
+
 /// Async client for the identity service's `/agents` endpoints.
 ///
 /// Cheap to clone — the inner `reqwest::Client` is `Arc`-based.
@@ -191,6 +292,161 @@ impl AgentsClient {
         self.get_json(url).await
     }
 
+    /// Look up a record by `(tenant, agent_name)`. Used by
+    /// `wardenctl agents create --if-absent` to decide between
+    /// "create a new row" and "compare against existing." Returns
+    /// `Ok(None)` when no match — distinct from a 404 for an unknown
+    /// id, which surfaces as `Err(Server)`.
+    pub async fn find_by_name(
+        &self,
+        tenant: &str,
+        agent_name: &str,
+    ) -> Result<Option<AgentRecord>, WardenError> {
+        // The server doesn't expose `?agent_name=` so we filter
+        // client-side. The list is bounded by tenant, which keeps
+        // worst-case fan-out tied to a single tenant's registration
+        // count — fine for IaC-shaped workflows (1-1000 rows).
+        let rows = self.list(tenant, AgentListFilter::default()).await?;
+        Ok(rows.into_iter().find(|r| r.agent_name == agent_name))
+    }
+
+    /// `POST /agents` — register a new agent. Body shape mirrors
+    /// `warden-identity::agents::CreateAgentRequest` (spec §5.2).
+    /// Returns the full record with the `spiffe_id_pattern` field
+    /// surfaced under the same envelope.
+    pub async fn create(&self, req: &CreateAgentRequest<'_>) -> Result<AgentCreated, WardenError> {
+        let url = self.join("agents")?;
+        self.post_json(url, req).await
+    }
+
+    /// `POST /agents/{id}/suspend` (spec §5.1). Owner-team or
+    /// `agents:admin`.
+    pub async fn suspend(
+        &self,
+        id: &str,
+        tenant: &str,
+        reason: Option<&str>,
+    ) -> Result<LifecycleResponse, WardenError> {
+        self.lifecycle_call(id, tenant, "suspend", reason).await
+    }
+
+    /// `POST /agents/{id}/unsuspend` (spec §5.1). Admin only.
+    pub async fn unsuspend(
+        &self,
+        id: &str,
+        tenant: &str,
+        reason: Option<&str>,
+    ) -> Result<LifecycleResponse, WardenError> {
+        self.lifecycle_call(id, tenant, "unsuspend", reason).await
+    }
+
+    /// `POST /agents/{id}/decommission` (spec §5.1). Admin only,
+    /// terminal — the row is preserved but its `(tenant, agent_name)`
+    /// is permanently unreusable.
+    pub async fn decommission(
+        &self,
+        id: &str,
+        tenant: &str,
+        reason: Option<&str>,
+    ) -> Result<LifecycleResponse, WardenError> {
+        self.lifecycle_call(id, tenant, "decommission", reason).await
+    }
+
+    /// `POST /agents/{id}/envelope/narrow`. Caller passes the *full
+    /// new envelope*, not a diff (spec §5.2).
+    pub async fn envelope_narrow(
+        &self,
+        id: &str,
+        tenant: &str,
+        envelope: EnvelopeRequest<'_>,
+    ) -> Result<AgentRecord, WardenError> {
+        let url = self.id_with_tenant(id, "envelope/narrow", tenant)?;
+        self.post_json(url, &envelope).await
+    }
+
+    /// `POST /agents/{id}/envelope/widen`. Admin only.
+    pub async fn envelope_widen(
+        &self,
+        id: &str,
+        tenant: &str,
+        envelope: EnvelopeRequest<'_>,
+    ) -> Result<AgentRecord, WardenError> {
+        let url = self.id_with_tenant(id, "envelope/widen", tenant)?;
+        self.post_json(url, &envelope).await
+    }
+
+    /// `POST /agents/{id}/attestation-kinds`. Auth dispatched per
+    /// direction (narrow = owner-team-or-admin; widen = admin only).
+    pub async fn attestation_kinds(
+        &self,
+        id: &str,
+        tenant: &str,
+        kinds: &[String],
+    ) -> Result<AgentRecord, WardenError> {
+        let url = self.id_with_tenant(id, "attestation-kinds", tenant)?;
+        let body = serde_json::json!({ "attestation_kinds": kinds });
+        self.post_json(url, &body).await
+    }
+
+    /// `POST /agents/{id}/owner-team`. Admin only.
+    pub async fn transfer_owner_team(
+        &self,
+        id: &str,
+        tenant: &str,
+        new_team: &str,
+    ) -> Result<AgentRecord, WardenError> {
+        let url = self.id_with_tenant(id, "owner-team", tenant)?;
+        let body = serde_json::json!({ "owner_team": new_team });
+        self.post_json(url, &body).await
+    }
+
+    /// `POST /agents/{id}/description`. Owner-team or admin. Pass
+    /// `None` for `text` to clear the description.
+    pub async fn set_description(
+        &self,
+        id: &str,
+        tenant: &str,
+        text: Option<&str>,
+    ) -> Result<AgentRecord, WardenError> {
+        let url = self.id_with_tenant(id, "description", tenant)?;
+        let body = serde_json::json!({ "description": text });
+        self.post_json(url, &body).await
+    }
+
+    /// Build a URL of the form `agents/{id}/<verb>?tenant=<t>`. The
+    /// `verb` is appended verbatim — callers pass it as a constant
+    /// (`"suspend"`, `"envelope/narrow"`, …) so the path-segment
+    /// boundaries can't be confused.
+    fn id_with_tenant(&self, id: &str, verb: &str, tenant: &str) -> Result<Url, WardenError> {
+        let path = format!("agents/{}/{}", percent_encode(id), verb);
+        let mut url = self
+            .base_url
+            .join(&path)
+            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+        url.query_pairs_mut().append_pair("tenant", tenant);
+        Ok(url)
+    }
+
+    /// Relative path joiner used by writes that take their tenant in
+    /// the body (currently just `POST /agents`).
+    fn join(&self, suffix: &str) -> Result<Url, WardenError> {
+        self.base_url
+            .join(suffix)
+            .map_err(|e| WardenError::InvalidConfig(format!("join {suffix}: {e}")))
+    }
+
+    async fn lifecycle_call(
+        &self,
+        id: &str,
+        tenant: &str,
+        verb: &str,
+        reason: Option<&str>,
+    ) -> Result<LifecycleResponse, WardenError> {
+        let url = self.id_with_tenant(id, verb, tenant)?;
+        let body = LifecycleRequest { reason };
+        self.post_json(url, &body).await
+    }
+
     /// Internal: GET `url` with the bearer header (if any) and decode
     /// JSON. Errors on non-200 with the wire body for diagnostics.
     /// 401 maps to `Unauthorized`; 400 to `BadRequest`; all other
@@ -203,12 +459,44 @@ impl AgentsClient {
         let resp = req.send().await?;
         let status = resp.status();
         let body = resp.text().await?;
-        match status {
-            StatusCode::OK => serde_json::from_str(&body).map_err(WardenError::Decode),
-            StatusCode::UNAUTHORIZED => Err(WardenError::Unauthorized(body)),
-            StatusCode::BAD_REQUEST => Err(WardenError::BadRequest(body)),
-            other => Err(WardenError::Server { status: other, body }),
+        decode_response(status, body)
+    }
+
+    /// Internal: POST `url` with the bearer + JSON body, decode the
+    /// response. Accepts 200 *and* 201 as success since the create
+    /// endpoint emits 201 (spec §5.2 example shows 200; the server
+    /// settled on 201 to match REST conventions — both shapes are
+    /// in-band the same `T`).
+    async fn post_json<B: Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        url: Url,
+        body: &B,
+    ) -> Result<T, WardenError> {
+        let mut req = self.http.post(url).json(body);
+        if let Some(token) = self.bearer.as_ref() {
+            req = req.bearer_auth(token);
         }
+        let resp = req.send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        decode_response(status, body)
+    }
+}
+
+/// Centralized status-code dispatch so `get_json` and `post_json`
+/// never drift on what counts as a hit. 200 and 201 both map through
+/// the JSON decoder; 4xx/5xx routes to typed errors.
+fn decode_response<T: serde::de::DeserializeOwned>(
+    status: StatusCode,
+    body: String,
+) -> Result<T, WardenError> {
+    match status {
+        StatusCode::OK | StatusCode::CREATED => {
+            serde_json::from_str(&body).map_err(WardenError::Decode)
+        }
+        StatusCode::UNAUTHORIZED => Err(WardenError::Unauthorized(body)),
+        StatusCode::BAD_REQUEST => Err(WardenError::BadRequest(body)),
+        other => Err(WardenError::Server { status: other, body }),
     }
 }
 
@@ -489,5 +777,470 @@ mod tests {
             url.as_str(),
             "http://example.test/agents?tenant=acme&state=active"
         );
+    }
+
+    // ── P2: write-surface mock-server tests ──────────────────────────
+
+    /// Mutable mock state — the write tests need to POST and read
+    /// back. Wraps a `Mutex<Vec<AgentRecord>>` so the mock stays
+    /// thread-friendly under axum's executor.
+    #[derive(Clone)]
+    struct WriteMockState {
+        records: Arc<tokio::sync::Mutex<Vec<AgentRecord>>>,
+    }
+
+    fn fixture_record(name: &str) -> AgentRecord {
+        AgentRecord {
+            id: format!("01HW000-{name}"),
+            tenant: "acme".into(),
+            agent_name: name.into(),
+            state: AgentState::Active,
+            scope_envelope: vec!["mcp:read:tickets".into(), "mcp:write:tickets".into()],
+            yellow_envelope: vec!["refund:<=50usd".into()],
+            attestation_kinds_accepted: vec!["dev-mock".into()],
+            created_by_sub: "user:alice@acme.com".into(),
+            created_by_idp: "okta".into(),
+            owner_team: "payments".into(),
+            created_at: "2026-05-04T00:00:00Z".into(),
+            state_changed_at: "2026-05-04T00:00:00Z".into(),
+            state_changed_by: "user:alice@acme.com".into(),
+            description: None,
+        }
+    }
+
+    async fn spawn_write_mock(
+        seeded: Vec<AgentRecord>,
+    ) -> (String, oneshot::Sender<()>, WriteMockState) {
+        let state = WriteMockState {
+            records: Arc::new(tokio::sync::Mutex::new(seeded)),
+        };
+        let app = Router::new()
+            .route("/agents", get(write_list).post(write_create))
+            .route("/agents/{id}", get(write_get_one))
+            .route("/agents/{id}/suspend", axum::routing::post(write_suspend))
+            .route(
+                "/agents/{id}/decommission",
+                axum::routing::post(write_decommission),
+            )
+            .route(
+                "/agents/{id}/owner-team",
+                axum::routing::post(write_transfer),
+            )
+            .route(
+                "/agents/{id}/envelope/narrow",
+                axum::routing::post(write_narrow),
+            )
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        (format!("http://{addr}/"), shutdown_tx, state)
+    }
+
+    async fn write_list(
+        State(state): State<WriteMockState>,
+        Query(_params): Query<std::collections::HashMap<String, String>>,
+        _headers: HeaderMap,
+    ) -> Json<serde_json::Value> {
+        let rows = state.records.lock().await.clone();
+        Json(serde_json::to_value(rows).unwrap())
+    }
+
+    async fn write_get_one(
+        State(state): State<WriteMockState>,
+        Path(id): Path<String>,
+        _headers: HeaderMap,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        let rows = state.records.lock().await;
+        for r in rows.iter() {
+            if r.id == id {
+                return (
+                    axum::http::StatusCode::OK,
+                    Json(serde_json::to_value(r).unwrap()),
+                );
+            }
+        }
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            Json(json!({"error":"not_found"})),
+        )
+    }
+
+    async fn write_create(
+        State(state): State<WriteMockState>,
+        _headers: HeaderMap,
+        Json(body): Json<serde_json::Value>,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        // Reject duplicate names with the spec error code so the
+        // SDK tests can assert the typed `Server` mapping.
+        let name = body["agent_name"].as_str().unwrap_or("").to_string();
+        let mut rows = state.records.lock().await;
+        if rows.iter().any(|r| r.agent_name == name) {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                Json(json!({"error":"agent_name_taken"})),
+            );
+        }
+        // Build the record from request body; canned fields fill in
+        // server-side defaults the real handler would compute.
+        let record = AgentRecord {
+            id: format!("01HW-mock-{name}"),
+            tenant: body["tenant"].as_str().unwrap().into(),
+            agent_name: name.clone(),
+            state: AgentState::Active,
+            scope_envelope: body["scope_envelope"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            yellow_envelope: body["yellow_envelope"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            attestation_kinds_accepted: body["attestation_kinds"]
+                .as_array()
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default(),
+            created_by_sub: "user:test".into(),
+            created_by_idp: "okta".into(),
+            owner_team: body["owner_team"].as_str().unwrap_or("").into(),
+            created_at: "2026-05-04T00:00:00Z".into(),
+            state_changed_at: "2026-05-04T00:00:00Z".into(),
+            state_changed_by: "user:test".into(),
+            description: body["description"].as_str().map(String::from),
+        };
+        rows.push(record.clone());
+        let response = json!({
+            "id": record.id,
+            "tenant": record.tenant,
+            "agent_name": record.agent_name,
+            "state": record.state.as_wire(),
+            "scope_envelope": record.scope_envelope,
+            "yellow_envelope": record.yellow_envelope,
+            "attestation_kinds_accepted": record.attestation_kinds_accepted,
+            "created_by_sub": record.created_by_sub,
+            "created_by_idp": record.created_by_idp,
+            "owner_team": record.owner_team,
+            "created_at": record.created_at,
+            "state_changed_at": record.state_changed_at,
+            "state_changed_by": record.state_changed_by,
+            "description": record.description,
+            "spiffe_id_pattern":
+                format!("spiffe://wd.test/tenant/{}/agent/{}/instance/*",
+                    record.tenant, record.agent_name),
+        });
+        (axum::http::StatusCode::CREATED, Json(response))
+    }
+
+    async fn transition(
+        state: WriteMockState,
+        id: &str,
+        target: AgentState,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        let mut rows = state.records.lock().await;
+        let Some(r) = rows.iter_mut().find(|r| r.id == id) else {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error":"not_found"})),
+            );
+        };
+        if r.state == AgentState::Decommissioned && target != AgentState::Decommissioned {
+            return (
+                axum::http::StatusCode::CONFLICT,
+                Json(json!({"error":"agent_decommissioned"})),
+            );
+        }
+        r.state = target;
+        r.state_changed_at = "2026-05-04T00:30:00Z".into();
+        (
+            axum::http::StatusCode::OK,
+            Json(json!({
+                "state": target.as_wire(),
+                "state_changed_at": r.state_changed_at,
+            })),
+        )
+    }
+
+    async fn write_suspend(
+        State(state): State<WriteMockState>,
+        Path(id): Path<String>,
+        _headers: HeaderMap,
+        _body: axum::body::Bytes,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        transition(state, &id, AgentState::Suspended).await
+    }
+
+    async fn write_decommission(
+        State(state): State<WriteMockState>,
+        Path(id): Path<String>,
+        _headers: HeaderMap,
+        _body: axum::body::Bytes,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        transition(state, &id, AgentState::Decommissioned).await
+    }
+
+    async fn write_transfer(
+        State(state): State<WriteMockState>,
+        Path(id): Path<String>,
+        _headers: HeaderMap,
+        Json(body): Json<serde_json::Value>,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        let team = body["owner_team"].as_str().unwrap_or("").to_string();
+        let mut rows = state.records.lock().await;
+        let Some(r) = rows.iter_mut().find(|r| r.id == id) else {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error":"not_found"})),
+            );
+        };
+        r.owner_team = team;
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(r).unwrap()),
+        )
+    }
+
+    async fn write_narrow(
+        State(state): State<WriteMockState>,
+        Path(id): Path<String>,
+        _headers: HeaderMap,
+        Json(body): Json<serde_json::Value>,
+    ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+        let new_scope: Vec<String> = body["scope_envelope"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        let mut rows = state.records.lock().await;
+        let Some(r) = rows.iter_mut().find(|r| r.id == id) else {
+            return (
+                axum::http::StatusCode::NOT_FOUND,
+                Json(json!({"error":"not_found"})),
+            );
+        };
+        // Server-side check: new ⊆ old.
+        let old: std::collections::BTreeSet<&str> =
+            r.scope_envelope.iter().map(String::as_str).collect();
+        let new: std::collections::BTreeSet<&str> = new_scope.iter().map(String::as_str).collect();
+        if !new.is_subset(&old) {
+            let offenders: Vec<String> =
+                new.difference(&old).map(|s| (*s).to_string()).collect();
+            return (
+                axum::http::StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({"error":"envelope_not_narrower","offenders":offenders})),
+            );
+        }
+        r.scope_envelope = new_scope;
+        (
+            axum::http::StatusCode::OK,
+            Json(serde_json::to_value(r).unwrap()),
+        )
+    }
+
+    #[tokio::test]
+    async fn create_round_trips() {
+        let (base, shutdown, _state) = spawn_write_mock(vec![]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "payments",
+            scope_envelope: vec!["mcp:read:tickets".into()],
+            yellow_envelope: vec![],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: Some("triage"),
+        };
+        let created = client.create(&req).await.unwrap();
+        assert_eq!(created.record.agent_name, "support-bot-3");
+        assert_eq!(created.record.state, AgentState::Active);
+        assert!(created
+            .spiffe_id_pattern
+            .ends_with("/agent/support-bot-3/instance/*"));
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn create_409_maps_to_server_error() {
+        let (base, shutdown, _state) =
+            spawn_write_mock(vec![fixture_record("support-bot-3")]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "payments",
+            scope_envelope: vec![],
+            yellow_envelope: vec![],
+            attestation_kinds: vec![],
+            description: None,
+        };
+        let err = client.create(&req).await.unwrap_err();
+        match err {
+            crate::WardenError::Server { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::CONFLICT);
+                assert!(body.contains("agent_name_taken"));
+            }
+            other => panic!("expected Server, got {other:?}"),
+        }
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn suspend_and_decommission_chain() {
+        let rec = fixture_record("support-bot-3");
+        let id = rec.id.clone();
+        let (base, shutdown, _state) = spawn_write_mock(vec![rec]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+        let resp = client.suspend(&id, "acme", Some("incident")).await.unwrap();
+        assert_eq!(resp.state, AgentState::Suspended);
+        let resp = client
+            .decommission(&id, "acme", Some("team disbanded"))
+            .await
+            .unwrap();
+        assert_eq!(resp.state, AgentState::Decommissioned);
+        // After decommission, suspend → 409 agent_decommissioned.
+        let err = client.suspend(&id, "acme", None).await.unwrap_err();
+        match err {
+            crate::WardenError::Server { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::CONFLICT);
+                assert!(body.contains("agent_decommissioned"));
+            }
+            other => panic!("expected Server, got {other:?}"),
+        }
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn envelope_narrow_subset_succeeds_offenders_named_on_violation() {
+        let rec = fixture_record("support-bot-3");
+        let id = rec.id.clone();
+        let (base, shutdown, _state) = spawn_write_mock(vec![rec]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+
+        let smaller = vec!["mcp:read:tickets".into()];
+        let yellow: Vec<String> = vec![];
+        let updated = client
+            .envelope_narrow(
+                &id,
+                "acme",
+                EnvelopeRequest {
+                    scope_envelope: &smaller,
+                    yellow_envelope: &yellow,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.scope_envelope, smaller);
+
+        // Re-narrow with a scope that wasn't in the old envelope -
+        // 422 with offender named.
+        let bad = vec!["mcp:write:invoices".into()];
+        let err = client
+            .envelope_narrow(
+                &id,
+                "acme",
+                EnvelopeRequest {
+                    scope_envelope: &bad,
+                    yellow_envelope: &yellow,
+                },
+            )
+            .await
+            .unwrap_err();
+        match err {
+            crate::WardenError::Server { status, body } => {
+                assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY);
+                assert!(body.contains("envelope_not_narrower"));
+                assert!(body.contains("mcp:write:invoices"));
+            }
+            other => panic!("expected Server, got {other:?}"),
+        }
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn transfer_owner_team_round_trips() {
+        let rec = fixture_record("support-bot-3");
+        let id = rec.id.clone();
+        let (base, shutdown, _state) = spawn_write_mock(vec![rec]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+        let updated = client
+            .transfer_owner_team(&id, "acme", "newteam")
+            .await
+            .unwrap();
+        assert_eq!(updated.owner_team, "newteam");
+        let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn find_by_name_returns_match_and_none() {
+        let (base, shutdown, _state) =
+            spawn_write_mock(vec![fixture_record("support-bot-3")]).await;
+        let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
+        let found = client.find_by_name("acme", "support-bot-3").await.unwrap();
+        assert!(found.is_some());
+        let nope = client.find_by_name("acme", "no-such-bot").await.unwrap();
+        assert!(nope.is_none());
+        let _ = shutdown.send(());
+    }
+
+    #[test]
+    fn create_request_matches_is_set_insensitive() {
+        let record = fixture_record("support-bot-3");
+        // Same envelopes in different orders → match.
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "payments",
+            scope_envelope: vec!["mcp:write:tickets".into(), "mcp:read:tickets".into()],
+            yellow_envelope: vec!["refund:<=50usd".into()],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: None,
+        };
+        assert!(create_request_matches(&req, &record));
+
+        // Add a duplicate — still matches (set semantics).
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "payments",
+            scope_envelope: vec![
+                "mcp:read:tickets".into(),
+                "mcp:write:tickets".into(),
+                "mcp:read:tickets".into(),
+            ],
+            yellow_envelope: vec!["refund:<=50usd".into()],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: Some("ignored field"),
+        };
+        assert!(create_request_matches(&req, &record));
+
+        // Different owner_team → no match.
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "infra",
+            scope_envelope: vec!["mcp:read:tickets".into(), "mcp:write:tickets".into()],
+            yellow_envelope: vec!["refund:<=50usd".into()],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: None,
+        };
+        assert!(!create_request_matches(&req, &record));
+
+        // Different scope envelope size → no match.
+        let req = CreateAgentRequest {
+            tenant: "acme",
+            agent_name: "support-bot-3",
+            owner_team: "payments",
+            scope_envelope: vec!["mcp:read:tickets".into()],
+            yellow_envelope: vec!["refund:<=50usd".into()],
+            attestation_kinds: vec!["dev-mock".into()],
+            description: None,
+        };
+        assert!(!create_request_matches(&req, &record));
     }
 }
