@@ -75,7 +75,7 @@ pub struct LedgerEntry {
     /// a security claim — see the warning in `warden_ledger`.
     #[serde(default)]
     pub source: Option<String>,
-    /// Rejection / annotation signal (ONBOARDING.md §6.3 vocabulary):
+    /// Rejection / annotation signal (warden-specs/TECH_SPEC.md#agent-onboarding-wao §6.3 vocabulary):
     /// `unregistered_agent`, `scope_outside_envelope`,
     /// `yellow_scope_outside_envelope`, `agent_suspended`,
     /// `agent_decommissioned`, `attestation_kind_not_accepted`,
@@ -85,7 +85,7 @@ pub struct LedgerEntry {
     #[serde(default)]
     pub signal: Option<String>,
     /// Chain v3 — Warden Agent Onboarding lifecycle event kind
-    /// (ONBOARDING.md §7.2). `None` on every v1/v2 row.
+    /// (warden-specs/TECH_SPEC.md#agent-onboarding-wao §7.2). `None` on every v1/v2 row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_kind: Option<String>,
     /// v3 — Tenant the lifecycle row belongs to.
@@ -142,7 +142,7 @@ pub struct LedgerEntry {
 /// Lifecycle row + the per-event-kind payload bytes that the chain
 /// row's `payload_sha256` commits to. Mirrors
 /// `warden_ledger::LifecycleRow`. Powers the console's per-agent
-/// timeline (ONBOARDING.md §10.1).
+/// timeline (warden-specs/TECH_SPEC.md#agent-onboarding-wao §10.1).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LifecycleRow {
     #[serde(flatten)]
