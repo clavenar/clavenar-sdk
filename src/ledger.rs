@@ -340,6 +340,22 @@ impl LedgerClient {
         self.get_json("verify").await
     }
 
+    /// `GET /agents` — distinct CN-shaped agents that have ever
+    /// emitted a v1/v2 verdict row. The console uses this as the
+    /// "all agents" default for the audit page so any CN that has
+    /// logged a row appears, not just those known to the simulator
+    /// roster.
+    pub async fn list_agents(&self) -> Result<Vec<String>, WardenError> {
+        // Inline shape — single-field response, identical pattern to
+        // `audit_agent_count` above.
+        #[derive(Deserialize)]
+        struct Wrap {
+            agents: Vec<String>,
+        }
+        let w: Wrap = self.get_json("agents").await?;
+        Ok(w.agents)
+    }
+
     /// `GET /audit/agent/{tenant}/{agent_id}/lifecycle` — chain v3
     /// rows for a registered agent, joined with the per-kind
     /// payload bytes. Ordered chain-ascending so the timeline reads
