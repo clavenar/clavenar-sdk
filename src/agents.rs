@@ -11,7 +11,7 @@
 //! ## Auth model
 //!
 //! Every `/agents` endpoint takes `Authorization: Bearer <oidc_id_token>`
-//! per ONBOARDING.md §5.1. The server validates the token against the
+//! per warden-specs/TECH_SPEC.md#agent-onboarding-wao §5.1. The server validates the token against the
 //! per-tenant JWKS and resolves the caller's IdP groups to capability
 //! strings via the configured `[capabilities.tenants.<tid>]` map.
 //! From the SDK's perspective, the only auth surface is the bearer
@@ -21,7 +21,7 @@
 //! ## Wire types
 //!
 //! [`AgentRecord`] is duplicated verbatim from the server-side struct
-//! per CLAUDE.md repo convention. Cross-repo wire-shape changes need a
+//! per the no-shared-crate repo convention. Cross-repo wire-shape changes need a
 //! grep across `warden-identity`, `warden-sdk`, `warden-console`,
 //! `wardenctl` before any rename.
 
@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
 
-/// Agent lifecycle state per ONBOARDING.md §3.2. Wire form is the
+/// Agent lifecycle state per warden-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -134,7 +134,7 @@ pub struct CreateAgentRequest<'a> {
 
 /// Wire constant for the migration `actor_sub` prefix — must match
 /// `warden-identity::agents::MIGRATION_ACTOR_SUB_PREFIX`. Duplicated
-/// because there's no shared crate, per CLAUDE.md repo convention.
+/// because there's no shared crate (per repo convention).
 pub const MIGRATION_ACTOR_SUB_PREFIX: &str = "system:migration:";
 
 /// Response shape for `POST /agents`: the registered record plus the
@@ -251,7 +251,7 @@ impl AgentsClient {
         self
     }
 
-    /// Builder-style attachment of an OIDC `id_token`. Per ONBOARDING.md
+    /// Builder-style attachment of an OIDC `id_token`. Per warden-specs/TECH_SPEC.md#agent-onboarding-wao
     /// §5.1 every `/agents` call expects a bearer; CLI / console
     /// callers per-request rebuild a client whose bearer is the
     /// session's id_token (rather than holding a long-lived service
