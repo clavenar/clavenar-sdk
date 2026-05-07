@@ -145,6 +145,10 @@ pub struct DiffResponse {
 
 // ── Client ────────────────────────────────────────────────────────────
 
+/// Cheap to clone — the inner `reqwest::Client` is `Arc`-based, same
+/// as `AgentsClient`. Enables `Arc<AppState>` patterns where the
+/// console embeds the SDK client directly in shared state.
+#[derive(Debug, Clone)]
 pub struct PoliciesClient {
     base_url: Url,
     http: Client,
