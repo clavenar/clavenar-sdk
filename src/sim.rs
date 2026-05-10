@@ -17,10 +17,11 @@
 //! isolation (compose internal network) for access control. **Do not
 //! deploy this client against a production simulator.**
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
+use crate::http::decode_response;
 
 /// One row in the live agent roster — mirrors the simulator's
 /// internal `AgentRecord`. `transient=false` for the boot roster,
@@ -109,56 +110,23 @@ impl SimClient {
 
     /// `GET /status` — current multiplier + agent roster + stats.
     pub async fn status(&self) -> Result<SimStatus, WardenError> {
-        let endpoint = self
-            .base_url
-            .join("status")
-            .map_err(|e| WardenError::InvalidConfig(format!("join status: {e}")))?;
-        let resp = self.http.get(endpoint).send().await?;
-        let status = resp.status();
-        let raw = resp.text().await?;
-        if status == StatusCode::OK {
-            serde_json::from_str(&raw).map_err(WardenError::Decode)
-        } else {
-            Err(WardenError::Server { status, body: raw })
-        }
+        self.get_json("status").await
     }
 
     /// `POST /multiplier` — update the simulator's traffic multiplier
     /// in place. Returns the post-update [`SimStatus`] so the caller
     /// can render the new state without a follow-up `status()` call.
     pub async fn set_multiplier(&self, multiplier: f64) -> Result<SimStatus, WardenError> {
-        let endpoint = self
-            .base_url
-            .join("multiplier")
-            .map_err(|e| WardenError::InvalidConfig(format!("join multiplier: {e}")))?;
-        let body = serde_json::json!({ "traffic_multiplier": multiplier });
-        let resp = self.http.post(endpoint).json(&body).send().await?;
-        let status = resp.status();
-        let raw = resp.text().await?;
-        if status == StatusCode::OK {
-            serde_json::from_str(&raw).map_err(WardenError::Decode)
-        } else {
-            Err(WardenError::Server { status, body: raw })
-        }
+        self.post_json("multiplier", &serde_json::json!({ "traffic_multiplier": multiplier }))
+            .await
     }
 
     /// `POST /running` — flip the simulator's start/stop flag.
     /// Returns the post-update [`SimStatus`] so the caller can render
     /// the new badge without a follow-up `status()` call.
     pub async fn set_running(&self, running: bool) -> Result<SimStatus, WardenError> {
-        let endpoint = self
-            .base_url
-            .join("running")
-            .map_err(|e| WardenError::InvalidConfig(format!("join running: {e}")))?;
-        let body = serde_json::json!({ "running": running });
-        let resp = self.http.post(endpoint).json(&body).send().await?;
-        let status = resp.status();
-        let raw = resp.text().await?;
-        if status == StatusCode::OK {
-            serde_json::from_str(&raw).map_err(WardenError::Decode)
-        } else {
-            Err(WardenError::Server { status, body: raw })
-        }
+        self.post_json("running", &serde_json::json!({ "running": running }))
+            .await
     }
 
     /// `POST /auto-decide` — pause or resume the simulator's HIL
@@ -167,19 +135,8 @@ impl SimClient {
     /// answers 409 Conflict and this surfaces as
     /// [`WardenError::Server`] with the explanation in the body.
     pub async fn set_auto_decide(&self, enabled: bool) -> Result<SimStatus, WardenError> {
-        let endpoint = self
-            .base_url
-            .join("auto-decide")
-            .map_err(|e| WardenError::InvalidConfig(format!("join auto-decide: {e}")))?;
-        let body = serde_json::json!({ "enabled": enabled });
-        let resp = self.http.post(endpoint).json(&body).send().await?;
-        let status = resp.status();
-        let raw = resp.text().await?;
-        if status == StatusCode::OK {
-            serde_json::from_str(&raw).map_err(WardenError::Decode)
-        } else {
-            Err(WardenError::Server { status, body: raw })
-        }
+        self.post_json("auto-decide", &serde_json::json!({ "enabled": enabled }))
+            .await
     }
 
     /// `POST /agents` — mint and spawn `count` transient agents of
@@ -190,26 +147,45 @@ impl SimClient {
         persona: &str,
         count: usize,
     ) -> Result<Vec<String>, WardenError> {
+        // The simulator returns `{ spawned: [...] }`; project to the
+        // inner Vec so callers don't carry the wrapper.
+        #[derive(Deserialize)]
+        struct Wrap {
+            spawned: Vec<String>,
+        }
+        let w: Wrap = self
+            .post_json("agents", &serde_json::json!({ "persona": persona, "count": count }))
+            .await?;
+        Ok(w.spawned)
+    }
+
+    async fn get_json<T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+    ) -> Result<T, WardenError> {
         let endpoint = self
             .base_url
-            .join("agents")
-            .map_err(|e| WardenError::InvalidConfig(format!("join agents: {e}")))?;
-        let body = serde_json::json!({ "persona": persona, "count": count });
-        let resp = self.http.post(endpoint).json(&body).send().await?;
+            .join(path)
+            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+        let resp = self.http.get(endpoint).send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
-        if status == StatusCode::OK {
-            // The simulator returns `{ spawned: [...] }`; we project
-            // to the inner Vec so callers don't carry the wrapper.
-            #[derive(Deserialize)]
-            struct Wrap {
-                spawned: Vec<String>,
-            }
-            let w: Wrap = serde_json::from_str(&raw).map_err(WardenError::Decode)?;
-            Ok(w.spawned)
-        } else {
-            Err(WardenError::Server { status, body: raw })
-        }
+        let body = resp.text().await?;
+        decode_response(status, body)
+    }
+
+    async fn post_json<B: Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, WardenError> {
+        let endpoint = self
+            .base_url
+            .join(path)
+            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+        let resp = self.http.post(endpoint).json(body).send().await?;
+        let status = resp.status();
+        let body = resp.text().await?;
+        decode_response(status, body)
     }
 }
 

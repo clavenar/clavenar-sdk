@@ -264,7 +264,7 @@ impl PoliciesClient {
         req: &CreatePolicyRequest<'_>,
     ) -> Result<MutationResponse, WardenError> {
         let url = self.join("policies")?;
-        self.post_json(url, req).await
+        self.send_json(reqwest::Method::POST, url, req).await
     }
 
     /// `PUT /policies/{name}` — update body. 409 on
@@ -276,7 +276,7 @@ impl PoliciesClient {
         req: &UpdatePolicyRequest<'_>,
     ) -> Result<MutationResponse, WardenError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
-        self.put_json(url, req).await
+        self.send_json(reqwest::Method::PUT, url, req).await
     }
 
     pub async fn activate(
@@ -288,7 +288,7 @@ impl PoliciesClient {
             "policies/{}/activate",
             percent_encode(name)
         ))?;
-        self.post_json(url, req).await
+        self.send_json(reqwest::Method::POST, url, req).await
     }
 
     pub async fn deactivate(
@@ -300,7 +300,7 @@ impl PoliciesClient {
             "policies/{}/deactivate",
             percent_encode(name)
         ))?;
-        self.post_json(url, req).await
+        self.send_json(reqwest::Method::POST, url, req).await
     }
 
     /// `DELETE /policies/{name}` — soft delete. Body is a
@@ -311,7 +311,7 @@ impl PoliciesClient {
         req: &StateChangeRequest<'_>,
     ) -> Result<MutationResponse, WardenError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
-        self.delete_json(url, req).await
+        self.send_json(reqwest::Method::DELETE, url, req).await
     }
 
     /// `POST /policies/{name}/rollback/{version}` — recreate the
@@ -327,7 +327,7 @@ impl PoliciesClient {
             percent_encode(name),
             version
         ))?;
-        self.post_json(url, req).await
+        self.send_json(reqwest::Method::POST, url, req).await
     }
 
     /// Helper for a console row that just received a 409 from
@@ -362,42 +362,13 @@ impl PoliciesClient {
         decode_response(status, body)
     }
 
-    async fn post_json<B: Serialize, T: serde::de::DeserializeOwned>(
+    async fn send_json<B: Serialize, T: serde::de::DeserializeOwned>(
         &self,
+        method: reqwest::Method,
         url: Url,
         body: &B,
     ) -> Result<T, WardenError> {
-        let mut req = self.http.post(url).json(body);
-        if let Some(token) = self.bearer.as_ref() {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        decode_response(status, body)
-    }
-
-    async fn put_json<B: Serialize, T: serde::de::DeserializeOwned>(
-        &self,
-        url: Url,
-        body: &B,
-    ) -> Result<T, WardenError> {
-        let mut req = self.http.put(url).json(body);
-        if let Some(token) = self.bearer.as_ref() {
-            req = req.bearer_auth(token);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        let body = resp.text().await?;
-        decode_response(status, body)
-    }
-
-    async fn delete_json<B: Serialize, T: serde::de::DeserializeOwned>(
-        &self,
-        url: Url,
-        body: &B,
-    ) -> Result<T, WardenError> {
-        let mut req = self.http.delete(url).json(body);
+        let mut req = self.http.request(method, url).json(body);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
         }
