@@ -27,7 +27,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
-use crate::http::{decode_response, percent_encode};
+use crate::http::{decode_response, parse_base_url, percent_encode};
 
 /// One row of the `policies` table — current state of a managed
 /// policy file.
@@ -159,8 +159,7 @@ pub struct PoliciesClient {
 impl PoliciesClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8082`).
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
-        let url = Url::parse(base_url.as_ref())
-            .map_err(|e| WardenError::InvalidConfig(format!("base_url: {e}")))?;
+        let url = parse_base_url(base_url.as_ref())?;
         let http = Client::builder().build().map_err(WardenError::Transport)?;
         Ok(Self {
             base_url: url,

@@ -237,6 +237,28 @@ async fn bearer_token_is_forwarded_in_authorization_header() {
 }
 
 #[tokio::test]
+async fn client_preserves_path_prefix_in_base_url() {
+    // Operator behind a reverse proxy at /warden/ prefix: every request
+    // must carry that prefix. RFC 3986 reference resolution drops it
+    // unless the base URL ends with `/`, so the SDK normalizes for us.
+    let app = Router::new().route(
+        "/warden/mcp",
+        post(|| async {
+            (StatusCode::OK, Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})))
+                .into_response()
+        }),
+    );
+    let (origin, shutdown) = spawn(app).await;
+
+    // No trailing slash, has a path component — the case that used to break.
+    let prefixed = format!("{origin}/warden");
+    let client = WardenClient::builder(&prefixed).unwrap().build().unwrap();
+    let reply = client.call_tool("search", json!({})).await.expect("prefix preserved");
+    assert_eq!(reply["result"], "ok");
+    drop(shutdown);
+}
+
+#[tokio::test]
 async fn audit_correlation_decodes_ledger_entries() {
     let app = Router::new().route(
         "/audit/correlation/{cid}",

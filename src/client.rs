@@ -16,6 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::WardenError;
+use crate::http::parse_base_url;
 
 /// Authentication mode for the proxy.
 ///
@@ -62,8 +63,7 @@ impl WardenClient {
     /// `base_url` should be the proxy's origin — the SDK appends
     /// `/mcp` itself.
     pub fn builder(base_url: impl AsRef<str>) -> Result<WardenClientBuilder, WardenError> {
-        let url = Url::parse(base_url.as_ref())
-            .map_err(|e| WardenError::InvalidConfig(format!("base_url: {e}")))?;
+        let url = parse_base_url(base_url.as_ref())?;
         Ok(WardenClientBuilder {
             base_url: url,
             auth: Auth::None,
@@ -119,10 +119,6 @@ impl WardenClient {
     /// status. Public methods build `body` and delegate here so the
     /// status-handling logic lives in one place.
     async fn send_raw(&self, body: Value) -> Result<Value, WardenError> {
-        // `Url::join` on a base ending in "/" appends; on a base with a
-        // path-suffix it replaces the last segment. We always want
-        // append, so a base of "http://host" or "http://host/" both
-        // hit "http://host/mcp" the same way.
         let endpoint = self
             .base_url
             .join("mcp")
