@@ -46,6 +46,7 @@
 mod agents;
 mod client;
 mod error;
+mod http;
 mod ledger;
 mod policies;
 mod sim;

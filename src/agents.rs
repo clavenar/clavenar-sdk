@@ -25,10 +25,11 @@
 //! grep across `warden-identity`, `warden-sdk`, `warden-console`,
 //! `wardenctl` before any rename.
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
+use crate::http::{decode_response, percent_encode};
 
 /// Agent lifecycle state per warden-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
@@ -529,41 +530,6 @@ impl AgentsClient {
         let body = resp.text().await?;
         decode_response(status, body)
     }
-}
-
-/// Centralized status-code dispatch so `get_json` and `post_json`
-/// never drift on what counts as a hit. 200 and 201 both map through
-/// the JSON decoder; 4xx/5xx routes to typed errors.
-fn decode_response<T: serde::de::DeserializeOwned>(
-    status: StatusCode,
-    body: String,
-) -> Result<T, WardenError> {
-    match status {
-        StatusCode::OK | StatusCode::CREATED => {
-            serde_json::from_str(&body).map_err(WardenError::Decode)
-        }
-        StatusCode::UNAUTHORIZED => Err(WardenError::Unauthorized(body)),
-        StatusCode::BAD_REQUEST => Err(WardenError::BadRequest(body)),
-        other => Err(WardenError::Server { status: other, body }),
-    }
-}
-
-/// Same minimal percent-encoder as `ledger.rs` — kept private here to
-/// avoid pulling the `percent-encoding` crate for one site.
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char);
-            }
-            other => {
-                use std::fmt::Write;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
 }
 
 #[cfg(test)]

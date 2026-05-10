@@ -23,10 +23,11 @@
 //! grep `warden-policy-engine`, `warden-sdk`, `warden-console`, and
 //! `wardenctl` before any rename.
 
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
+use crate::http::{decode_response, percent_encode};
 
 /// One row of the `policies` table — current state of a managed
 /// policy file.
@@ -407,52 +408,12 @@ impl PoliciesClient {
     }
 }
 
-/// Centralized status-code dispatch matching `agents.rs`. 200/201
-/// pass through the JSON decoder; 401/400 route to typed errors;
-/// every other status (incl. 409) lands in `Server` so the caller can
-/// optionally `parse_conflict` on the body.
-fn decode_response<T: serde::de::DeserializeOwned>(
-    status: StatusCode,
-    body: String,
-) -> Result<T, WardenError> {
-    match status {
-        StatusCode::OK | StatusCode::CREATED => {
-            serde_json::from_str(&body).map_err(WardenError::Decode)
-        }
-        StatusCode::UNAUTHORIZED => Err(WardenError::Unauthorized(body)),
-        StatusCode::BAD_REQUEST => Err(WardenError::BadRequest(body)),
-        other => Err(WardenError::Server { status: other, body }),
-    }
-}
-
-/// Same minimal percent-encoder as `ledger.rs` and `agents.rs` —
-/// kept private here to avoid pulling the `percent-encoding` crate
-/// for one site.
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char);
-            }
-            other => {
-                use std::fmt::Write;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn rejects_malformed_base_url() {
-        // `PoliciesClient` doesn't impl `Debug` (the inner
-        // `reqwest::Client` doesn't either), so we use a `match`
-        // rather than `unwrap_err()`.
         match PoliciesClient::new("not a url") {
             Ok(_) => panic!("expected InvalidConfig"),
             Err(WardenError::InvalidConfig(_)) => {}
@@ -484,11 +445,5 @@ mod tests {
     #[test]
     fn parse_conflict_returns_none_for_plain_text() {
         assert!(PoliciesClient::parse_conflict("policy already exists").is_none());
-    }
-
-    #[test]
-    fn percent_encode_passes_unreserved() {
-        assert_eq!(percent_encode("governance.rego"), "governance.rego");
-        assert_eq!(percent_encode("a/b"), "a%2Fb");
     }
 }
