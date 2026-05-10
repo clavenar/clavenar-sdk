@@ -29,7 +29,7 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::WardenError;
-use crate::http::{decode_response, percent_encode};
+use crate::http::{decode_response, parse_base_url, percent_encode};
 
 /// Agent lifecycle state per warden-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
@@ -234,8 +234,7 @@ impl AgentsClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8086`).
     /// Returns `InvalidConfig` if the URL is malformed.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
-        let url = Url::parse(base_url.as_ref())
-            .map_err(|e| WardenError::InvalidConfig(format!("base_url: {e}")))?;
+        let url = parse_base_url(base_url.as_ref())?;
         let http = Client::builder().build().map_err(WardenError::Transport)?;
         Ok(Self {
             base_url: url,

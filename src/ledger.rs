@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::WardenError;
-use crate::http::percent_encode;
+use crate::http::{parse_base_url, percent_encode};
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
 /// the server-side `warden_ledger::LedgerEntry`. `correlation_id` is
@@ -219,8 +219,7 @@ impl LedgerClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8083`).
     /// Returns `InvalidConfig` if the URL is malformed.
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
-        let url = Url::parse(base_url.as_ref())
-            .map_err(|e| WardenError::InvalidConfig(format!("base_url: {e}")))?;
+        let url = parse_base_url(base_url.as_ref())?;
         let http = Client::builder().build().map_err(WardenError::Transport)?;
         Ok(Self { base_url: url, http })
     }
