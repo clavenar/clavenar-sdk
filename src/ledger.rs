@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::WardenError;
+use crate::http::percent_encode;
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
 /// the server-side `warden_ledger::LedgerEntry`. `correlation_id` is
@@ -461,43 +462,9 @@ impl LedgerClient {
     }
 }
 
-/// Minimal percent-encoder for path segments. We only need to escape
-/// the characters that would change the URL's structure (`/`, `?`,
-/// `#`) plus space and the percent itself; everything else can ride
-/// through. Pulling in `percent-encoding` for one site felt heavier
-/// than this.
-fn percent_encode(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        match b {
-            // Unreserved per RFC 3986 + a few common safe chars. Anything
-            // outside this set gets `%HH`'d.
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                out.push(b as char);
-            }
-            other => {
-                use std::fmt::Write;
-                let _ = write!(out, "%{other:02X}");
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn percent_encode_passes_unreserved() {
-        assert_eq!(percent_encode("abc-XYZ_0.9~"), "abc-XYZ_0.9~");
-    }
-
-    #[test]
-    fn percent_encode_escapes_path_specials() {
-        assert_eq!(percent_encode("a/b?c#d"), "a%2Fb%3Fc%23d");
-        assert_eq!(percent_encode("hello world"), "hello%20world");
-    }
 
     #[test]
     fn ledger_entry_round_trips_through_json() {
