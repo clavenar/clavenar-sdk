@@ -188,6 +188,43 @@ pub struct VerifyResult {
     pub unsupported_chain_version: Option<i64>,
 }
 
+/// One row of the Policy Lab replay corpus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CorpusEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    pub captured_at: DateTime<Utc>,
+    pub agent_id: String,
+    pub method: String,
+    /// Reconstructed PolicyInput shape. The client posts this back
+    /// to the policy-engine's `evaluate-batch` endpoint under
+    /// `inputs[]`. Opaque JSON — the policy-engine deserializes it.
+    pub input: serde_json::Value,
+    /// Verdict the policy engine recorded at the time of the
+    /// originating call.
+    pub historical_verdict: serde_json::Value,
+}
+
+/// `GET /audit/replay/corpus` response envelope.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayCorpus {
+    pub corpus: Vec<CorpusEntry>,
+    pub total_in_window: i64,
+    pub returned: i64,
+    pub sampled: bool,
+}
+
+/// Per-call params for [`LedgerClient::replay_corpus`]. Required:
+/// `since`, `limit`. Optional: `until`, `agent_id`, `tool_type`.
+#[derive(Debug, Clone, Default)]
+pub struct ReplayCorpusParams {
+    pub since: chrono::DateTime<chrono::Utc>,
+    pub until: Option<chrono::DateTime<chrono::Utc>>,
+    pub agent_id: Option<String>,
+    pub tool_type: Option<String>,
+    pub limit: i64,
+}
+
 /// Per-call options for [`LedgerClient::regulatory_export`]. Boxed up
 /// so adding a future slice 4+ field is non-breaking. Defaults to "no
 /// readme, no exports" — i.e. the slice 1+2 shape.
@@ -471,6 +508,35 @@ impl LedgerClient {
             percent_encode(tenant),
             percent_encode(agent_id),
         );
+        self.get_json(&path).await
+    }
+
+    /// `GET /audit/replay/corpus` — Policy Lab replay corpus. Returns
+    /// policy-decision rows in the time window whose stored
+    /// `policy_decision` carries an `input_replay` block, with each
+    /// row's PolicyInput reconstructed for replay against a candidate
+    /// Rego rule.
+    pub async fn replay_corpus(
+        &self,
+        params: ReplayCorpusParams,
+    ) -> Result<ReplayCorpus, WardenError> {
+        let mut path = format!(
+            "audit/replay/corpus?since={}&limit={}",
+            percent_encode(&params.since.to_rfc3339()),
+            params.limit,
+        );
+        if let Some(until) = params.until {
+            path.push_str(&format!(
+                "&until={}",
+                percent_encode(&until.to_rfc3339())
+            ));
+        }
+        if let Some(a) = params.agent_id.as_deref() {
+            path.push_str(&format!("&agent_id={}", percent_encode(a)));
+        }
+        if let Some(t) = params.tool_type.as_deref() {
+            path.push_str(&format!("&tool_type={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
