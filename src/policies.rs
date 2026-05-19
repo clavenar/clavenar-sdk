@@ -100,6 +100,12 @@ pub struct CreatePolicyRequest<'a> {
     pub reason: &'a str,
     pub actor_sub: &'a str,
     pub actor_idp: &'a str,
+    /// Optional draft mode. Pre-Phase-7 callers omit this field and
+    /// the server defaults to `active=true`. Phase-7 Self-Learn flow
+    /// sets `Some(false)` so accepted candidates require an explicit
+    /// Activate step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -233,6 +239,76 @@ pub struct EvaluateBatchError {
 /// compile error (e.g. an envelope-level validation error from a
 /// future server version).
 pub fn parse_batch_error(body: &str) -> Option<EvaluateBatchError> {
+    serde_json::from_str(body).ok()
+}
+
+// ── Self-Learn miner (Phase 7) ────────────────────────────────────────
+
+/// Same shape as the active-engine [`BatchVerdict`] — kept distinct so
+/// that the miner's diff tile counts can evolve without changing the
+/// Lab wire format.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MineLabReplay {
+    pub allow_to_deny: u32,
+    pub allow_to_yellow: u32,
+    pub deny_to_allow: u32,
+    pub deny_to_yellow: u32,
+    pub yellow_to_allow: u32,
+    pub yellow_to_deny: u32,
+    pub unchanged: u32,
+    pub catalog_regressions: u32,
+}
+
+/// A single candidate rule the miner proposes. The console renders
+/// these as cards; operator Accept lands the `rego_body` as a draft
+/// policy via the existing `POST /policies` create path with
+/// `active=false`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MineCandidate {
+    pub id: String,
+    pub kind: String,
+    pub rule_name: String,
+    pub one_liner: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+    #[serde(default)]
+    pub brain_enriched: bool,
+    pub rego_body: String,
+    pub compile_ok: bool,
+    pub evidence_count: u32,
+    pub score: f32,
+    pub lab_replay: MineLabReplay,
+}
+
+/// `POST /policies/mine` request. The console + ctl construct the
+/// corpus by calling [`crate::LedgerClient::replay_corpus`] first and
+/// forwarding the result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MineRequest {
+    pub corpus: Vec<PolicyInputJson>,
+    #[serde(default)]
+    pub historical_verdicts: Vec<BatchVerdict>,
+    pub max_candidates: u32,
+    pub ask_brain: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MineResponse {
+    pub candidates: Vec<MineCandidate>,
+    pub corpus_size: u32,
+    pub candidates_dropped: u32,
+    pub evaluated_in_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MineError {
+    pub message: String,
+}
+
+/// Parse a 400 body from `mine` into a typed [`MineError`]. Returns
+/// `None` when the body shape doesn't match (e.g. a future server
+/// emitting a different envelope).
+pub fn parse_mine_error(body: &str) -> Option<MineError> {
     serde_json::from_str(body).ok()
 }
 
@@ -426,6 +502,21 @@ impl PoliciesClient {
         req: &EvaluateBatchRequest,
     ) -> Result<EvaluateBatchResponse, WardenError> {
         let url = self.join("policies/evaluate-batch")?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
+    /// `POST /policies/mine` — Self-Learn miner (Phase 7). Sends a
+    /// corpus + historical verdicts; the policy-engine runs its
+    /// detectors, renders each pattern into a candidate Rego rule,
+    /// scores it via the same evaluate-batch pipeline, and returns
+    /// a ranked list. Brain optionally enriches each candidate with
+    /// a natural-language one-liner + rationale.
+    ///
+    /// `WardenError::Server { status: 400, body }` carries
+    /// [`MineError`] (corpus malformed, too large, etc.); call
+    /// [`parse_mine_error`] to lift it out.
+    pub async fn mine(&self, req: &MineRequest) -> Result<MineResponse, WardenError> {
+        let url = self.join("policies/mine")?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
