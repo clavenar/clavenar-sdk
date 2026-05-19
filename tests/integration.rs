@@ -517,6 +517,7 @@ async fn policies_create_round_trips_typed_request_and_response() {
             reason: "test",
             actor_sub: "alice",
             actor_idp: "oidc:test",
+            active: None,
         })
         .await
         .expect("create");

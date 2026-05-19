@@ -44,6 +44,7 @@
 //! ```
 
 mod agents;
+mod brain;
 mod client;
 mod error;
 mod http;
@@ -63,11 +64,15 @@ pub use ledger::{
     CorpusEntry, ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions,
     ReplayCorpus, ReplayCorpusParams, VerifyResult,
 };
+pub use brain::{
+    BrainClient, ExplainPatternRequest, ExplainPatternResponse,
+};
 pub use policies::{
-    parse_batch_error, BatchMode, BatchVerdict, BatchVerdictResult, CompileError, ConflictResponse,
-    CreatePolicyRequest, DiffClass, DiffResponse, EvaluateBatchError, EvaluateBatchRequest,
-    EvaluateBatchResponse, MutationResponse, PoliciesClient, PoliciesListResponse, PolicyDetail,
-    PolicyInputJson, PolicyRow, PolicyVersionRow, RollbackRequest, StateChangeRequest,
-    UpdatePolicyRequest, VersionsListResponse,
+    parse_batch_error, parse_mine_error, BatchMode, BatchVerdict, BatchVerdictResult, CompileError,
+    ConflictResponse, CreatePolicyRequest, DiffClass, DiffResponse, EvaluateBatchError,
+    EvaluateBatchRequest, EvaluateBatchResponse, MineCandidate, MineError, MineLabReplay,
+    MineRequest, MineResponse, MutationResponse, PoliciesClient, PoliciesListResponse,
+    PolicyDetail, PolicyInputJson, PolicyRow, PolicyVersionRow, RollbackRequest,
+    StateChangeRequest, UpdatePolicyRequest, VersionsListResponse,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};
