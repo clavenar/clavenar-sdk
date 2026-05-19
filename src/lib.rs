@@ -60,11 +60,14 @@ pub use client::{Auth, WardenClient, WardenClientBuilder};
 pub use error::WardenError;
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
-    ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions, VerifyResult,
+    CorpusEntry, ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions,
+    ReplayCorpus, ReplayCorpusParams, VerifyResult,
 };
 pub use policies::{
-    ConflictResponse, CreatePolicyRequest, DiffResponse, MutationResponse, PoliciesClient,
-    PoliciesListResponse, PolicyDetail, PolicyRow, PolicyVersionRow, RollbackRequest,
-    StateChangeRequest, UpdatePolicyRequest, VersionsListResponse,
+    parse_batch_error, BatchMode, BatchVerdict, BatchVerdictResult, CompileError, ConflictResponse,
+    CreatePolicyRequest, DiffClass, DiffResponse, EvaluateBatchError, EvaluateBatchRequest,
+    EvaluateBatchResponse, MutationResponse, PoliciesClient, PoliciesListResponse, PolicyDetail,
+    PolicyInputJson, PolicyRow, PolicyVersionRow, RollbackRequest, StateChangeRequest,
+    UpdatePolicyRequest, VersionsListResponse,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};

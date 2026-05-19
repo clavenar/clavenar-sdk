@@ -146,6 +146,96 @@ pub struct DiffResponse {
     pub diff: String,
 }
 
+// ── Policy Lab (evaluate-batch) wire types ────────────────────────────
+
+/// Replay-corpus PolicyInput shape used by `evaluate_batch`. Mirrors
+/// the policy-engine's `wire::PolicyInput` field-for-field; carried as
+/// a Value here so adding a field server-side is non-breaking for SDK
+/// consumers. Set this from the corpus entry returned by
+/// [`crate::LedgerClient::replay_corpus`].
+pub type PolicyInputJson = serde_json::Value;
+
+/// Mode for the candidate Rego rule in
+/// [`PoliciesClient::evaluate_batch`].
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum BatchMode {
+    /// Add the candidate alongside the active set.
+    Add,
+    /// Drop the named active rule before adding the candidate.
+    Replace,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiffClass {
+    AllowToDeny,
+    AllowToYellow,
+    DenyToAllow,
+    YellowToAllow,
+    YellowToDeny,
+    DenyToYellow,
+    Unchanged,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchVerdict {
+    pub allow: bool,
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub review_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchVerdictResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    pub before: BatchVerdict,
+    pub after: BatchVerdict,
+    pub diff: DiffClass,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluateBatchRequest {
+    pub candidate_rego: String,
+    pub candidate_name: String,
+    pub mode: BatchMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_rule_name: Option<String>,
+    pub inputs: Vec<PolicyInputJson>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluateBatchResponse {
+    pub active_compile_ok: bool,
+    pub candidate_compile_ok: bool,
+    pub results: Vec<BatchVerdictResult>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompileError {
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub column: Option<u32>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvaluateBatchError {
+    pub active_compile_ok: bool,
+    pub candidate_compile_ok: bool,
+    pub compile_error: CompileError,
+}
+
+/// Parse a 400 body from `evaluate_batch` into a typed
+/// [`EvaluateBatchError`]. Returns `None` when the body isn't a
+/// compile error (e.g. an envelope-level validation error from a
+/// future server version).
+pub fn parse_batch_error(body: &str) -> Option<EvaluateBatchError> {
+    serde_json::from_str(body).ok()
+}
+
 // ── Client ────────────────────────────────────────────────────────────
 
 /// Cheap to clone — the inner `reqwest::Client` is `Arc`-based, same
@@ -319,6 +409,24 @@ impl PoliciesClient {
     ) -> Result<MutationResponse, WardenError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
         self.send_json(reqwest::Method::DELETE, url, req).await
+    }
+
+    /// `POST /policies/evaluate-batch` — Policy Lab batch evaluator.
+    /// Sends a candidate Rego rule + a list of `PolicyInput`s; the
+    /// policy-engine compiles an ephemeral engine that includes the
+    /// candidate and returns the per-input verdict diff against the
+    /// active engine.
+    ///
+    /// `WardenError::Server { status: 400, body }` carries the
+    /// structured [`EvaluateBatchError`] (compile error with line/col)
+    /// when the candidate fails to parse; call [`parse_batch_error`]
+    /// to lift it out.
+    pub async fn evaluate_batch(
+        &self,
+        req: &EvaluateBatchRequest,
+    ) -> Result<EvaluateBatchResponse, WardenError> {
+        let url = self.join("policies/evaluate-batch")?;
+        self.send_json(reqwest::Method::POST, url, req).await
     }
 
     /// `POST /policies/{name}/rollback/{version}` — recreate the
