@@ -33,6 +33,12 @@ use crate::http::{default_provider, decode_response, parse_base_url, percent_enc
 
 /// One row of the `policies` table — current state of a managed
 /// policy file.
+///
+/// Frontmatter fields (`domain` through `summary`) are populated by
+/// the engine's seed/refresh pipeline from the `.rego` file's top
+/// comment block. They carry `#[serde(default)]` so callers built
+/// against a pre-frontmatter engine still deserialize the older
+/// `policies` payload shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyRow {
     pub name: String,
@@ -42,6 +48,20 @@ pub struct PolicyRow {
     pub deleted_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default)]
+    pub tool_surface: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
 }
 
 /// One row of `policy_versions` — append-only body history.
@@ -312,6 +332,75 @@ pub fn parse_mine_error(body: &str) -> Option<MineError> {
     serde_json::from_str(body).ok()
 }
 
+// ── Library catalog (templates) ───────────────────────────────────────
+//
+// Mirror types for the `/policies/templates*` surface on
+// `warden-policy-engine`. Templates are on-disk starter policies that
+// live in `<policy_dir>/templates/`; the library endpoints read their
+// frontmatter, join against the installed-set in SQLite, and proxy
+// install/lab to the same write/batch paths managed policies use.
+
+/// One row in the catalog listing
+/// (`GET /policies/templates`). The seven frontmatter fields mirror
+/// [`PolicyRow`]; the `installed` flag is `true` when a policy with
+/// the same `name` exists in the active set.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyTemplate {
+    pub name: String,
+    pub content_type: String,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub severity: Option<String>,
+    #[serde(default)]
+    pub frameworks: Vec<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub tier: Option<String>,
+    #[serde(default)]
+    pub tool_surface: Vec<String>,
+    #[serde(default)]
+    pub summary: Option<String>,
+    pub installed: bool,
+}
+
+/// `GET /policies/templates/{name}` envelope: `PolicyTemplate`
+/// flattened in plus the body of the rego/json file and its sha256,
+/// so the console's detail page renders the source + keys the auto-
+/// Lab against a stable body hash in one round-trip.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyTemplateDetail {
+    #[serde(flatten)]
+    pub template: PolicyTemplate,
+    pub body: String,
+    pub body_sha256: String,
+}
+
+/// Body of `POST /policies/templates/{name}/install`. Same audit
+/// fields as `CreatePolicyRequest` minus `name`/`content_type`/`body`
+/// — those come from the template file.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstallTemplateRequest<'a> {
+    pub reason: &'a str,
+    pub actor_sub: &'a str,
+    pub actor_idp: &'a str,
+}
+
+/// Body of `POST /policies/templates/{name}/lab`. Same diff
+/// envelope as [`evaluate_batch`](PoliciesClient::evaluate_batch) but
+/// the candidate body comes from the path-named template on disk —
+/// the caller only supplies the corpus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LabTemplateRequest {
+    /// Defaults to `Add` server-side when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<BatchMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replace_rule_name: Option<String>,
+    pub inputs: Vec<PolicyInputJson>,
+}
+
 // ── Client ────────────────────────────────────────────────────────────
 
 /// Cheap to clone — the inner `reqwest::Client` is `Arc`-based, same
@@ -520,6 +609,72 @@ impl PoliciesClient {
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
+    // ── Library catalog ──────────────────────────────────────────
+
+    /// `GET /policies/templates` — list every starter template in the
+    /// engine's on-disk catalog, ordered by name. Each entry carries
+    /// frontmatter metadata + an `installed` flag joined against the
+    /// active policy set.
+    pub async fn list_templates(&self) -> Result<Vec<PolicyTemplate>, WardenError> {
+        let url = self.join("policies/templates")?;
+        self.get_json(url).await
+    }
+
+    /// `GET /policies/templates/{name}` — one template's frontmatter,
+    /// body, and body_sha256. 404 when the template file isn't on
+    /// disk.
+    pub async fn get_template(
+        &self,
+        name: &str,
+    ) -> Result<PolicyTemplateDetail, WardenError> {
+        let url = self.join(&format!(
+            "policies/templates/{}",
+            percent_encode(name)
+        ))?;
+        self.get_json(url).await
+    }
+
+    /// `POST /policies/templates/{name}/install` — copy a template
+    /// into the active policy set. Returns the same
+    /// [`MutationResponse`] as `create`; the ledger event kind is
+    /// `policy.installed_from_template` rather than `policy.created`,
+    /// so forensic queries can distinguish library installs from
+    /// operator-authored creates.
+    ///
+    /// 404 when the template is missing; 409 when a policy with the
+    /// same name is already installed.
+    pub async fn install_template(
+        &self,
+        name: &str,
+        req: &InstallTemplateRequest<'_>,
+    ) -> Result<MutationResponse, WardenError> {
+        let url = self.join(&format!(
+            "policies/templates/{}/install",
+            percent_encode(name)
+        ))?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
+    /// `POST /policies/templates/{name}/lab` — run the template
+    /// against a corpus of historical traffic without committing.
+    /// Same diff envelope as `evaluate_batch`; the candidate body is
+    /// read from disk so the caller only supplies the corpus.
+    ///
+    /// 404 when the template is missing — the error surfaces through
+    /// [`EvaluateBatchError`] (`candidate_compile_ok = false`) so the
+    /// console's existing Lab renderer needs no special-case branch.
+    pub async fn lab_template(
+        &self,
+        name: &str,
+        req: &LabTemplateRequest,
+    ) -> Result<EvaluateBatchResponse, WardenError> {
+        let url = self.join(&format!(
+            "policies/templates/{}/lab",
+            percent_encode(name)
+        ))?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
     /// `POST /policies/{name}/rollback/{version}` — recreate the
     /// body of `version` as a new version.
     pub async fn rollback(
@@ -622,5 +777,145 @@ mod tests {
     #[test]
     fn parse_conflict_returns_none_for_plain_text() {
         assert!(PoliciesClient::parse_conflict("policy already exists").is_none());
+    }
+
+    #[test]
+    fn policy_row_round_trips_with_new_metadata() {
+        let body = serde_json::json!({
+            "name": "phi_egress.rego",
+            "content_type": "rego",
+            "active": true,
+            "current_version": 1,
+            "deleted_at": null,
+            "created_at": "2026-05-20T00:00:00Z",
+            "updated_at": "2026-05-20T00:00:00Z",
+            "domain": "healthcare",
+            "severity": "high",
+            "frameworks": ["HIPAA", "HITRUST"],
+            "tags": ["phi", "egress"],
+            "tier": "deny",
+            "tool_surface": ["phi_export", "send_email"],
+            "summary": "Deny PHI exports."
+        })
+        .to_string();
+        let row: PolicyRow = serde_json::from_str(&body).unwrap();
+        assert_eq!(row.domain.as_deref(), Some("healthcare"));
+        assert_eq!(row.frameworks, vec!["HIPAA", "HITRUST"]);
+        assert_eq!(row.tool_surface, vec!["phi_export", "send_email"]);
+
+        // Serialize back and parse again — full round-trip.
+        let again = serde_json::to_string(&row).unwrap();
+        let row2: PolicyRow = serde_json::from_str(&again).unwrap();
+        assert_eq!(row2.domain, row.domain);
+        assert_eq!(row2.tags, row.tags);
+    }
+
+    #[test]
+    fn policy_template_deserializes_from_server_json() {
+        let body = serde_json::json!({
+            "name": "phi_egress.rego",
+            "content_type": "rego",
+            "domain": "healthcare",
+            "severity": "high",
+            "frameworks": ["HIPAA"],
+            "tags": ["phi"],
+            "tier": "deny",
+            "tool_surface": ["phi_export"],
+            "summary": "Deny PHI exports.",
+            "installed": false
+        })
+        .to_string();
+        let t: PolicyTemplate = serde_json::from_str(&body).unwrap();
+        assert_eq!(t.name, "phi_egress.rego");
+        assert!(!t.installed);
+        assert_eq!(t.frameworks, vec!["HIPAA"]);
+    }
+
+    #[test]
+    fn policy_template_detail_flatten_round_trips() {
+        let body = serde_json::json!({
+            "name": "phi_egress.rego",
+            "content_type": "rego",
+            "domain": "healthcare",
+            "frameworks": [],
+            "tags": [],
+            "tool_surface": [],
+            "installed": true,
+            "body": "package warden.authz\ndefault allow := false\n",
+            "body_sha256": "deadbeef"
+        })
+        .to_string();
+        let d: PolicyTemplateDetail = serde_json::from_str(&body).unwrap();
+        assert_eq!(d.template.name, "phi_egress.rego");
+        assert_eq!(d.body_sha256, "deadbeef");
+        assert!(d.body.starts_with("package warden.authz"));
+        // Re-serializing keeps the flat shape (no `template: {...}` wrapper).
+        let again = serde_json::to_string(&d).unwrap();
+        assert!(again.contains("\"name\":\"phi_egress.rego\""));
+        assert!(!again.contains("\"template\":{"));
+    }
+
+    #[test]
+    fn install_template_request_serializes_with_audit_fields() {
+        let req = InstallTemplateRequest {
+            reason: "install phi_egress",
+            actor_sub: "alice",
+            actor_idp: "oidc:test",
+        };
+        let s = serde_json::to_value(&req).unwrap();
+        assert_eq!(s["reason"], "install phi_egress");
+        assert_eq!(s["actor_sub"], "alice");
+        assert_eq!(s["actor_idp"], "oidc:test");
+    }
+
+    #[test]
+    fn lab_template_request_omits_optional_fields_when_none() {
+        let req = LabTemplateRequest {
+            mode: None,
+            replace_rule_name: None,
+            inputs: vec![],
+        };
+        let s = serde_json::to_value(&req).unwrap();
+        assert!(s.get("mode").is_none(), "mode should be skipped: {s}");
+        assert!(
+            s.get("replace_rule_name").is_none(),
+            "replace_rule_name should be skipped: {s}"
+        );
+        assert_eq!(s["inputs"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn lab_template_request_serializes_mode_when_set() {
+        let req = LabTemplateRequest {
+            mode: Some(BatchMode::Replace),
+            replace_rule_name: Some("phi_egress.rego".into()),
+            inputs: vec![],
+        };
+        let s = serde_json::to_value(&req).unwrap();
+        assert_eq!(s["mode"], "replace");
+        assert_eq!(s["replace_rule_name"], "phi_egress.rego");
+    }
+
+    #[test]
+    fn policy_row_back_compat_with_pre_frontmatter_engine() {
+        // An older policy-engine (pre Step-1) returns a PolicyRow
+        // without any of the seven catalog metadata fields. The SDK
+        // must still deserialize it — that's the whole point of
+        // marking the new fields `#[serde(default)]`.
+        let body = serde_json::json!({
+            "name": "governance.rego",
+            "content_type": "rego",
+            "active": true,
+            "current_version": 1,
+            "deleted_at": null,
+            "created_at": "2026-04-01T00:00:00Z",
+            "updated_at": "2026-04-01T00:00:00Z"
+        })
+        .to_string();
+        let row: PolicyRow = serde_json::from_str(&body).unwrap();
+        assert_eq!(row.name, "governance.rego");
+        assert!(row.domain.is_none());
+        assert!(row.frameworks.is_empty());
+        assert!(row.tool_surface.is_empty());
     }
 }

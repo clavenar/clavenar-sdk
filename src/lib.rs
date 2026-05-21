@@ -70,9 +70,10 @@ pub use brain::{
 pub use policies::{
     parse_batch_error, parse_mine_error, BatchMode, BatchVerdict, BatchVerdictResult, CompileError,
     ConflictResponse, CreatePolicyRequest, DiffClass, DiffResponse, EvaluateBatchError,
-    EvaluateBatchRequest, EvaluateBatchResponse, MineCandidate, MineError, MineLabReplay,
-    MineRequest, MineResponse, MutationResponse, PoliciesClient, PoliciesListResponse,
-    PolicyDetail, PolicyInputJson, PolicyRow, PolicyVersionRow, RollbackRequest,
-    StateChangeRequest, UpdatePolicyRequest, VersionsListResponse,
+    EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest, LabTemplateRequest,
+    MineCandidate, MineError, MineLabReplay, MineRequest, MineResponse, MutationResponse,
+    PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson, PolicyRow, PolicyTemplate,
+    PolicyTemplateDetail, PolicyVersionRow, RollbackRequest, StateChangeRequest,
+    UpdatePolicyRequest, VersionsListResponse,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};
