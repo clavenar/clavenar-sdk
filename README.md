@@ -14,6 +14,12 @@ for the dev-onboarding story (lite is the OSS proxy you put in front
 of an agent, this SDK is what your app calls), and with the
 full Agent Warden control plane for production.
 
+Sequence diagrams for the five primary client paths — `WardenClient::call_tool`
+with veto parse, `LedgerClient` audit + verify, `AgentsClient`
+lifecycle, `PoliciesClient` update with optimistic concurrency, and
+Lab + Miner with typed-error lift — live in
+[`docs/SEQUENCES.md`](docs/SEQUENCES.md).
+
 ## What's in the box
 
 | Type                    | Wraps                                      | Returns                                                                  |
