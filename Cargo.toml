@@ -1,21 +1,21 @@
 [package]
-name = "warden-sdk"
+name = "clavenar-sdk"
 version = "0.1.0"
 edition = "2024"
-description = "Async Rust client for Agent Warden — wraps the proxy POST /mcp surface and the ledger audit/verify endpoints with typed verdicts."
+description = "Async Rust client for Clavenar — wraps the proxy POST /mcp surface and the ledger audit/verify endpoints with typed verdicts."
 license = "Apache-2.0"
-repository = "https://github.com/vanteguardlabs/warden-sdk"
+repository = "https://github.com/clavenar/clavenar-sdk"
 readme = "README.md"
 keywords = ["ai", "agent", "security", "client", "sdk"]
 categories = ["api-bindings", "network-programming"]
 
 [lib]
-name = "warden_sdk"
+name = "clavenar_sdk"
 path = "src/lib.rs"
 
 [dependencies]
 # rustls-tls (not native-tls) so a downstream `cargo install` on a fresh
-# box doesn't need a system openssl. Same combo as warden-lite.
+# box doesn't need a system openssl. Same combo as clavenar-lite.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 url = "2.5"
 serde = { version = "1", features = ["derive"] }

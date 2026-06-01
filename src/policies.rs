@@ -1,14 +1,14 @@
-//! Async client for `warden-policy-engine`'s console-policy-management
-//! surface (warden-specs/TECH_SPEC.md#console-policy-management §5).
+//! Async client for `clavenar-policy-engine`'s console-policy-management
+//! surface (clavenar-specs/TECH_SPEC.md#console-policy-management §5).
 //!
 //! Mirrors the server-side handlers in
-//! `warden-policy-engine::write_api` and `lib.rs`: every method here
-//! corresponds 1:1 with a route there. Used by `warden-console`'s
-//! `/policies` UI and (eventually) by `wardenctl policies …`.
+//! `clavenar-policy-engine::write_api` and `lib.rs`: every method here
+//! corresponds 1:1 with a route there. Used by `clavenar-console`'s
+//! `/policies` UI and (eventually) by `clavenarctl policies …`.
 //!
 //! ## Auth model
 //!
-//! `warden-policy-engine` does not terminate auth itself — it trusts
+//! `clavenar-policy-engine` does not terminate auth itself — it trusts
 //! whoever can reach :8082, which in deployment is only the proxy and
 //! console (internal-network mTLS). The `bearer` field is therefore
 //! optional and unused by the server today; we keep it for symmetry
@@ -20,15 +20,15 @@
 //! [`PolicyRow`], [`PolicyVersionRow`], [`PolicyDetail`], [`MutationResponse`]
 //! and the request bodies are duplicated verbatim from the server. The
 //! "shared types are not in a common crate" repo invariant applies —
-//! grep `warden-policy-engine`, `warden-sdk`, `warden-console`, and
-//! `wardenctl` before any rename.
+//! grep `clavenar-policy-engine`, `clavenar-sdk`, `clavenar-console`, and
+//! `clavenarctl` before any rename.
 
 use std::sync::Arc;
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::WardenError;
+use crate::ClavenarError;
 use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
 /// One row of the `policies` table — current state of a managed
@@ -340,7 +340,7 @@ pub fn parse_mine_error(body: &str) -> Option<MineError> {
 // ── Library catalog (templates) ───────────────────────────────────────
 //
 // Mirror types for the `/policies/templates*` surface on
-// `warden-policy-engine`. Templates are on-disk starter policies that
+// `clavenar-policy-engine`. Templates are on-disk starter policies that
 // live in `<policy_dir>/templates/`; the library endpoints read their
 // frontmatter, join against the installed-set in SQLite, and proxy
 // install/lab to the same write/batch paths managed policies use.
@@ -420,7 +420,7 @@ pub struct PoliciesClient {
 
 impl PoliciesClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8082`).
-    pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
         Ok(Self {
@@ -460,7 +460,7 @@ impl PoliciesClient {
     pub async fn list(
         &self,
         include_deleted: bool,
-    ) -> Result<Vec<PolicyRow>, WardenError> {
+    ) -> Result<Vec<PolicyRow>, ClavenarError> {
         let mut url = self.join("policies")?;
         if include_deleted {
             url.query_pairs_mut().append_pair("include_deleted", "true");
@@ -470,7 +470,7 @@ impl PoliciesClient {
     }
 
     /// `GET /policies/{name}` — current row + body.
-    pub async fn get(&self, name: &str) -> Result<PolicyDetail, WardenError> {
+    pub async fn get(&self, name: &str) -> Result<PolicyDetail, ClavenarError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
         self.get_json(url).await
     }
@@ -479,7 +479,7 @@ impl PoliciesClient {
     pub async fn list_versions(
         &self,
         name: &str,
-    ) -> Result<Vec<PolicyVersionRow>, WardenError> {
+    ) -> Result<Vec<PolicyVersionRow>, ClavenarError> {
         let url = self.join(&format!(
             "policies/{}/versions",
             percent_encode(name)
@@ -493,7 +493,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         version: i64,
-    ) -> Result<PolicyVersionRow, WardenError> {
+    ) -> Result<PolicyVersionRow, ClavenarError> {
         let url = self.join(&format!(
             "policies/{}/versions/{}",
             percent_encode(name),
@@ -510,7 +510,7 @@ impl PoliciesClient {
         name: &str,
         from: i64,
         to: i64,
-    ) -> Result<DiffResponse, WardenError> {
+    ) -> Result<DiffResponse, ClavenarError> {
         let mut url = self.join(&format!(
             "policies/{}/diff",
             percent_encode(name)
@@ -529,19 +529,19 @@ impl PoliciesClient {
     pub async fn create(
         &self,
         req: &CreatePolicyRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join("policies")?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
     /// `PUT /policies/{name}` — update body. 409 on
     /// `expected_current_version` mismatch carries [`ConflictResponse`]
-    /// in `WardenError::Server.body`.
+    /// in `ClavenarError::Server.body`.
     pub async fn update(
         &self,
         name: &str,
         req: &UpdatePolicyRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
         self.send_json(reqwest::Method::PUT, url, req).await
     }
@@ -550,7 +550,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         req: &StateChangeRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!(
             "policies/{}/activate",
             percent_encode(name)
@@ -562,7 +562,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         req: &StateChangeRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!(
             "policies/{}/deactivate",
             percent_encode(name)
@@ -576,7 +576,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         req: &StateChangeRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!("policies/{}", percent_encode(name)))?;
         self.send_json(reqwest::Method::DELETE, url, req).await
     }
@@ -587,14 +587,14 @@ impl PoliciesClient {
     /// candidate and returns the per-input verdict diff against the
     /// active engine.
     ///
-    /// `WardenError::Server { status: 400, body }` carries the
+    /// `ClavenarError::Server { status: 400, body }` carries the
     /// structured [`EvaluateBatchError`] (compile error with line/col)
     /// when the candidate fails to parse; call [`parse_batch_error`]
     /// to lift it out.
     pub async fn evaluate_batch(
         &self,
         req: &EvaluateBatchRequest,
-    ) -> Result<EvaluateBatchResponse, WardenError> {
+    ) -> Result<EvaluateBatchResponse, ClavenarError> {
         let url = self.join("policies/evaluate-batch")?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
@@ -606,10 +606,10 @@ impl PoliciesClient {
     /// a ranked list. Brain optionally enriches each candidate with
     /// a natural-language one-liner + rationale.
     ///
-    /// `WardenError::Server { status: 400, body }` carries
+    /// `ClavenarError::Server { status: 400, body }` carries
     /// [`MineError`] (corpus malformed, too large, etc.); call
     /// [`parse_mine_error`] to lift it out.
-    pub async fn mine(&self, req: &MineRequest) -> Result<MineResponse, WardenError> {
+    pub async fn mine(&self, req: &MineRequest) -> Result<MineResponse, ClavenarError> {
         let url = self.join("policies/mine")?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
@@ -620,7 +620,7 @@ impl PoliciesClient {
     /// engine's on-disk catalog, ordered by name. Each entry carries
     /// frontmatter metadata + an `installed` flag joined against the
     /// active policy set.
-    pub async fn list_templates(&self) -> Result<Vec<PolicyTemplate>, WardenError> {
+    pub async fn list_templates(&self) -> Result<Vec<PolicyTemplate>, ClavenarError> {
         let url = self.join("policies/templates")?;
         self.get_json(url).await
     }
@@ -631,7 +631,7 @@ impl PoliciesClient {
     pub async fn get_template(
         &self,
         name: &str,
-    ) -> Result<PolicyTemplateDetail, WardenError> {
+    ) -> Result<PolicyTemplateDetail, ClavenarError> {
         let url = self.join(&format!(
             "policies/templates/{}",
             percent_encode(name)
@@ -652,7 +652,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         req: &InstallTemplateRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!(
             "policies/templates/{}/install",
             percent_encode(name)
@@ -672,7 +672,7 @@ impl PoliciesClient {
         &self,
         name: &str,
         req: &LabTemplateRequest,
-    ) -> Result<EvaluateBatchResponse, WardenError> {
+    ) -> Result<EvaluateBatchResponse, ClavenarError> {
         let url = self.join(&format!(
             "policies/templates/{}/lab",
             percent_encode(name)
@@ -687,7 +687,7 @@ impl PoliciesClient {
         name: &str,
         version: i64,
         req: &RollbackRequest<'_>,
-    ) -> Result<MutationResponse, WardenError> {
+    ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join(&format!(
             "policies/{}/rollback/{}",
             percent_encode(name),
@@ -698,7 +698,7 @@ impl PoliciesClient {
 
     /// Helper for a console row that just received a 409 from
     /// `update`/`activate`/`deactivate`/`delete` — parses the embedded
-    /// [`ConflictResponse`] out of [`WardenError::Server.body`].
+    /// [`ConflictResponse`] out of [`ClavenarError::Server.body`].
     /// Returns `None` when the body isn't a `ConflictResponse` (e.g.
     /// the 409 came from `create`'s `name already exists` arm, which
     /// is plain text).
@@ -708,16 +708,16 @@ impl PoliciesClient {
 
     // ── Internal helpers ─────────────────────────────────────────
 
-    fn join(&self, suffix: &str) -> Result<Url, WardenError> {
+    fn join(&self, suffix: &str) -> Result<Url, ClavenarError> {
         self.base_url
             .join(suffix)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {suffix}: {e}")))
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {suffix}: {e}")))
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         url: Url,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let mut req = self.http.client().get(url);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
@@ -733,7 +733,7 @@ impl PoliciesClient {
         method: reqwest::Method,
         url: Url,
         body: &B,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let mut req = self.http.client().request(method, url).json(body);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
@@ -753,7 +753,7 @@ mod tests {
     fn rejects_malformed_base_url() {
         match PoliciesClient::new("not a url") {
             Ok(_) => panic!("expected InvalidConfig"),
-            Err(WardenError::InvalidConfig(_)) => {}
+            Err(ClavenarError::InvalidConfig(_)) => {}
             Err(other) => panic!("unexpected error: {other}"),
         }
     }
@@ -846,14 +846,14 @@ mod tests {
             "tags": [],
             "tool_surface": [],
             "installed": true,
-            "body": "package warden.authz\ndefault allow := false\n",
+            "body": "package clavenar.authz\ndefault allow := false\n",
             "body_sha256": "deadbeef"
         })
         .to_string();
         let d: PolicyTemplateDetail = serde_json::from_str(&body).unwrap();
         assert_eq!(d.template.name, "phi_egress.rego");
         assert_eq!(d.body_sha256, "deadbeef");
-        assert!(d.body.starts_with("package warden.authz"));
+        assert!(d.body.starts_with("package clavenar.authz"));
         // Re-serializing keeps the flat shape (no `template: {...}` wrapper).
         let again = serde_json::to_string(&d).unwrap();
         assert!(again.contains("\"name\":\"phi_egress.rego\""));

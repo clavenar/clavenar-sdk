@@ -31,7 +31,7 @@ jobs:
   # the repo root: advisories (RUSTSEC vulns + unmaintained), licenses
   # (allow-list), bans (multiple-version warnings), sources (only
   # crates.io). The deny.toml file is synced verbatim across all 14 Rust
-  # repos — edit warden-specs first if policy changes, then mirror into
+  # repos — edit clavenar-specs first if policy changes, then mirror into
   # every other repo.
   supply-chain:
     name: cargo-deny + cyclonedx SBOM

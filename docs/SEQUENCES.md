@@ -1,6 +1,6 @@
-# warden-sdk sequence diagrams
+# clavenar-sdk sequence diagrams
 
-Typed async client for Agent Warden's HTTP surfaces. Every diagram
+Typed async client for Clavenar's HTTP surfaces. Every diagram
 below traces one call through the SDK's status-dispatch + error
 projection layer, ordered against the actual source: `src/client.rs`,
 `src/ledger.rs`, `src/agents.rs`, `src/policies.rs`, `src/brain.rs`,
@@ -10,15 +10,15 @@ projection layer, ordered against the actual source: `src/client.rs`,
 
 | Lifeline | Role | Source |
 |---|---|---|
-| Caller | External application, `warden-console`, or `wardenctl`. | — |
-| WardenC | `WardenClient` — `POST /mcp` wrapper. | `src/client.rs` |
+| Caller | External application, `clavenar-console`, or `clavenarctl`. | — |
+| ClavenarC | `ClavenarClient` — `POST /mcp` wrapper. | `src/client.rs` |
 | LedgerC | `LedgerClient` — `/audit/*`, `/verify`, `/exports`, `/audit/replay/corpus`. | `src/ledger.rs` |
 | AgentsC | `AgentsClient` — `/agents` + `/agents/{id}/<verb>` lifecycle. | `src/agents.rs` |
 | PoliciesC | `PoliciesClient` — `/policies/*`, `/policies/evaluate-batch`, `/policies/mine`, `/policies/templates*`. | `src/policies.rs` |
 | BrainC | `BrainClient` — single-endpoint client for `POST /explain-pattern`. | `src/brain.rs` |
 | HttpP | `HttpProvider` — per-request `reqwest::Client` source. `StaticHttpClient` wraps one Client; hot-reload integrators return a fresh one per call. | `src/http.rs::HttpProvider`, `StaticHttpClient` |
-| Decoder | `decode_response` + `parse_veto` — status-code dispatch to `WardenError` arms. | `src/http.rs`, `src/client.rs` |
-| Server | The warden service the client targets — proxy / ledger / identity / policy-engine / brain. | external |
+| Decoder | `decode_response` + `parse_veto` — status-code dispatch to `ClavenarError` arms. | `src/http.rs`, `src/client.rs` |
+| Server | The clavenar service the client targets — proxy / ledger / identity / policy-engine / brain. | external |
 
 Every per-service client follows the same shape — `new(base_url)` →
 `with_http_client` / `with_http_provider` → method calls that route
@@ -29,73 +29,73 @@ surface.
 
 ---
 
-## 1. `WardenClient::call_tool` — proxy `POST /mcp` with veto parse
+## 1. `ClavenarClient::call_tool` — proxy `POST /mcp` with veto parse
 
 The headline use case. Wraps the JSON-RPC `tools/call` shape,
 attaches bearer auth, dispatches on HTTP status, projects the
-structured 403 into `WardenError::Veto` with a verbatim `raw`
+structured 403 into `ClavenarError::Veto` with a verbatim `raw`
 fallback so callers do not have to special-case the proxy edition.
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant Caller
-    participant WardenC as WardenClient::call_tool
+    participant ClavenarC as ClavenarClient::call_tool
     participant HttpP
-    participant Server as warden-proxy / warden-lite
+    participant Server as clavenar-proxy / clavenar-lite
     participant ParseVeto as parse_veto
 
-    Caller->>WardenC: call_tool("search", arguments)
+    Caller->>ClavenarC: call_tool("search", arguments)
 
-    WardenC-->>WardenC: id = next_id.fetch_add(1, Relaxed). build JSON-RPC body. join base_url + "mcp".
+    ClavenarC-->>ClavenarC: id = next_id.fetch_add(1, Relaxed). build JSON-RPC body. join base_url + "mcp".
 
-    WardenC->>HttpP: client()
-    HttpP-->>WardenC: Arc(reqwest::Client) snapshot. one Arc::clone per call. no rebuild on hot path.
+    ClavenarC->>HttpP: client()
+    HttpP-->>ClavenarC: Arc(reqwest::Client) snapshot. one Arc::clone per call. no rebuild on hot path.
 
     alt Auth::Bearer(token)
-        WardenC-->>WardenC: req.bearer_auth(token)
+        ClavenarC-->>ClavenarC: req.bearer_auth(token)
     end
 
-    WardenC->>Server: POST {base_url}/mcp with JSON body
-    Server-->>WardenC: status + raw body text
+    ClavenarC->>Server: POST {base_url}/mcp with JSON body
+    Server-->>ClavenarC: status + raw body text
 
     alt 200 OK
-        WardenC-->>WardenC: serde_json::from_str(raw)
+        ClavenarC-->>ClavenarC: serde_json::from_str(raw)
         alt parse fails
-            WardenC--xCaller: WardenError::Decode (unexpected from a real proxy. transport bug.)
+            ClavenarC--xCaller: ClavenarError::Decode (unexpected from a real proxy. transport bug.)
         else parse ok
-            WardenC-->>Caller: Value (upstream JSON-RPC response)
+            ClavenarC-->>Caller: Value (upstream JSON-RPC response)
         end
     else 403 Forbidden
-        WardenC->>ParseVeto: parse_veto(raw)
+        ClavenarC->>ParseVeto: parse_veto(raw)
         alt body is structured DenyResponse JSON
-            ParseVeto-->>WardenC: Veto with intent_category + reasons + review_reasons + raw
+            ParseVeto-->>ClavenarC: Veto with intent_category + reasons + review_reasons + raw
         else body is plain text (full-edition proxy today)
-            ParseVeto-->>WardenC: Veto with empty structured fields + raw verbatim
+            ParseVeto-->>ClavenarC: Veto with empty structured fields + raw verbatim
         end
-        WardenC--xCaller: WardenError::Veto (callers branch on intent_category)
+        ClavenarC--xCaller: ClavenarError::Veto (callers branch on intent_category)
     else 401 Unauthorized
-        WardenC--xCaller: WardenError::Unauthorized(raw)
+        ClavenarC--xCaller: ClavenarError::Unauthorized(raw)
     else 400 BadRequest
-        WardenC--xCaller: WardenError::BadRequest(raw)
+        ClavenarC--xCaller: ClavenarError::BadRequest(raw)
     else other (5xx, 503, 429, etc.)
-        WardenC--xCaller: WardenError::Server with status + body
+        ClavenarC--xCaller: ClavenarError::Server with status + body
     end
 ```
 
 **Non-obvious behaviour.**
 
-- The 403 path **never** returns `WardenError::Decode`. A
+- The 403 path **never** returns `ClavenarError::Decode`. A
   full-edition proxy that returns plain text falls into the
   `Veto with raw verbatim` branch — callers can match on
-  `WardenError::Veto { raw, .. }` without knowing which proxy
+  `ClavenarError::Veto { raw, .. }` without knowing which proxy
   edition served them. This is the load-bearing edition-agnostic
   property of the SDK.
 - `id` is an atomic monotonic counter. Concurrent `call_tool`
   calls from one client get distinct JSON-RPC ids without a
   mutex. `Ordering::Relaxed` is fine — uniqueness is the only
   invariant, not cross-thread happens-before.
-- `Auth::None` is the warden-lite "open access" default. The
+- `Auth::None` is the clavenar-lite "open access" default. The
   builder defaults to it; callers opt into `Auth::Bearer`
   explicitly. mTLS / OIDC / SPIFFE are reserved by
   `#[non_exhaustive]` so adding them later is not a breaking
@@ -110,7 +110,7 @@ sequenceDiagram
 
 ## 2. `LedgerClient` — audit fetch and verify
 
-Six-endpoint read surface against `warden-ledger`. All paths
+Six-endpoint read surface against `clavenar-ledger`. All paths
 funnel through `get_json` + `HttpProvider::client()`. The diagram
 shows the common operator workflow — pull a correlation join,
 page through an agent's history, run a chain verify — to surface
@@ -122,7 +122,7 @@ sequenceDiagram
     participant Caller as Caller (console / ctl)
     participant LedgerC
     participant HttpP
-    participant Ledger as warden-ledger
+    participant Ledger as clavenar-ledger
 
     Caller->>LedgerC: audit_correlation(uuid)
     LedgerC-->>LedgerC: percent_encode(correlation_id). join base_url with audit/correlation/{enc}.
@@ -161,7 +161,7 @@ sequenceDiagram
   request otherwise. UUIDs are hex-only so the encode is a no-op
   in the common case but defensive in general.
 - `base_url()` and `http_client()` are exposed for callers that
-  need SSE-streaming responses (`warden-console`'s live-tail
+  need SSE-streaming responses (`clavenar-console`'s live-tail
   proxy is the first such caller). The SDK still owns canonical
   request shaping; a streaming response cannot ride through the
   JSON-decode pipeline.
@@ -176,7 +176,7 @@ sequenceDiagram
 
 ## 3. `AgentsClient` lifecycle — bearer-authenticated CRUD
 
-Mirrors `warden-identity`'s nine-endpoint lifecycle surface. Each
+Mirrors `clavenar-identity`'s nine-endpoint lifecycle surface. Each
 call carries `Authorization: Bearer <oidc_id_token>`; the server
 validates against the per-tenant JWKS and resolves IdP groups to
 capability strings. Diagram shows the suspend path; the other
@@ -188,7 +188,7 @@ sequenceDiagram
     participant Caller as Caller (console / ctl)
     participant AgentsC
     participant HttpP
-    participant Identity as warden-identity
+    participant Identity as clavenar-identity
     participant Decoder as decode_response
 
     Caller->>AgentsC: with_bearer(id_token). suspend(agent_uuid, LifecycleRequest)
@@ -201,7 +201,7 @@ sequenceDiagram
     AgentsC->>Identity: POST /agents/{id}/suspend
     Identity-->>Identity: capability resolver. OIDC verify + tenant mismatch check + agents:suspend cap.
     Identity-->>Identity: prepare_lifecycle_emission. Vault Transit sign. Open SQLite tx. UPDATE agents row + INSERT outbox row + COMMIT.
-    Identity-->>Identity: best-effort publish to warden.forensic. if NATS down, leave outbox row for sweeper.
+    Identity-->>Identity: best-effort publish to clavenar.forensic. if NATS down, leave outbox row for sweeper.
 
     Identity-->>AgentsC: status + body
     AgentsC->>Decoder: decode_response(status, body)
@@ -209,13 +209,13 @@ sequenceDiagram
         Decoder-->>AgentsC: serde_json::from_str -> LifecycleResponse
         AgentsC-->>Caller: LifecycleResponse (new state, new envelope, chain row id)
     else 401 Unauthorized
-        Decoder-->>AgentsC: WardenError::Unauthorized(body) (bad bearer)
+        Decoder-->>AgentsC: ClavenarError::Unauthorized(body) (bad bearer)
         AgentsC--xCaller: Unauthorized
     else 400 BadRequest
-        Decoder-->>AgentsC: WardenError::BadRequest(body) (validation)
+        Decoder-->>AgentsC: ClavenarError::BadRequest(body) (validation)
         AgentsC--xCaller: BadRequest
     else 403 / 404 / 409 / 503
-        Decoder-->>AgentsC: WardenError::Server with status + body
+        Decoder-->>AgentsC: ClavenarError::Server with status + body
         AgentsC--xCaller: Server. caller branches on status code.
     end
 ```
@@ -225,9 +225,9 @@ sequenceDiagram
 - The SDK does NOT lift a tenant-mismatch 404 into a typed error.
   The server returns 404 (not 403) for cross-tenant reads to
   avoid leaking row existence; the SDK passes that through as
-  `WardenError::Server` and lets callers branch.
+  `ClavenarError::Server` and lets callers branch.
 - `create_request_matches` is exposed at the crate root for
-  `wardenctl agents create --if-absent` idempotent IaC patterns.
+  `clavenarctl agents create --if-absent` idempotent IaC patterns.
   Callers compare a `CreateAgentRequest` against an existing
   `AgentRecord` to decide whether to skip the POST.
 - The bearer token is per-`AgentsClient`-instance, not per-call.
@@ -254,7 +254,7 @@ sequenceDiagram
     participant Caller as Caller (console Admin)
     participant PoliciesC
     participant HttpP
-    participant Policy as warden-policy-engine
+    participant Policy as clavenar-policy-engine
     participant Decoder as decode_response
 
     Caller->>PoliciesC: update(name, UpdatePolicyRequest with expected_current_version)
@@ -270,7 +270,7 @@ sequenceDiagram
     alt mismatch
         Policy-->>PoliciesC: 409 with ConflictResponse JSON
         PoliciesC->>Decoder: decode_response(409, body)
-        Decoder-->>PoliciesC: WardenError::Server with status=409 + body (raw ConflictResponse JSON)
+        Decoder-->>PoliciesC: ClavenarError::Server with status=409 + body (raw ConflictResponse JSON)
         PoliciesC--xCaller: Server. Caller may parse body into ConflictResponse to render the diff modal.
     else version match
         Policy-->>Policy: build candidate Engine outside live mutex. BEGIN tx. INSERT version + outbox row. COMMIT. swap live engine atomically.
@@ -280,7 +280,7 @@ sequenceDiagram
         PoliciesC-->>Caller: MutationResponse (version, body_sha256, current_version, active, event_kind)
     else regorus compile error
         Policy-->>PoliciesC: 400 with error message
-        Decoder-->>PoliciesC: WardenError::BadRequest(body)
+        Decoder-->>PoliciesC: ClavenarError::BadRequest(body)
         PoliciesC--xCaller: BadRequest
     end
 ```
@@ -288,7 +288,7 @@ sequenceDiagram
 **Non-obvious behaviour.**
 
 - The 409 body **is** a `ConflictResponse` (typed). The SDK
-  surfaces it as `WardenError::Server { status: 409, body }`
+  surfaces it as `ClavenarError::Server { status: 409, body }`
   rather than projecting it into a typed variant — callers that
   care parse the body via `serde_json::from_str::<ConflictResponse>(&body)`.
   The asymmetry with `Veto` is deliberate: 403 has one shape
@@ -297,7 +297,7 @@ sequenceDiagram
   does not commit to one.
 - `decode_response` routes `409` (and `422`, `5xx`) all into the
   `Server` arm. Only `200`/`201`, `401`, and `400` get typed
-  treatment in the shared decode helper. `WardenClient` keeps its
+  treatment in the shared decode helper. `ClavenarClient` keeps its
   own dispatcher because of the 403 → `Veto` parse step that the
   shared helper does not cover.
 - `delete` is **soft** delete. The handler stamps `deleted_at`
@@ -312,7 +312,7 @@ sequenceDiagram
 
 Two adjacent endpoints with different 400 shapes. The SDK ships
 free functions to lift the typed envelope out of
-`WardenError::Server.body` so callers can render a structured
+`ClavenarError::Server.body` so callers can render a structured
 error (compile line/column for Lab; corpus-shape message for
 Miner) without re-implementing the parse.
 
@@ -322,7 +322,7 @@ sequenceDiagram
     participant Caller as Caller (console Admin)
     participant PoliciesC
     participant HttpP
-    participant Policy as warden-policy-engine
+    participant Policy as clavenar-policy-engine
     participant ParseLab as parse_batch_error
     participant ParseMine as parse_mine_error
 
@@ -335,7 +335,7 @@ sequenceDiagram
 
     alt candidate compile error
         Policy-->>PoliciesC: 400 with EvaluateBatchError JSON (active_compile_ok + candidate_compile_ok + compile_error with line + column)
-        PoliciesC--xCaller: WardenError::Server status=400 body=raw
+        PoliciesC--xCaller: ClavenarError::Server status=400 body=raw
         Caller->>ParseLab: parse_batch_error(body)
         ParseLab-->>Caller: Some(EvaluateBatchError) (render line + column in editor gutter)
     else ok
@@ -353,7 +353,7 @@ sequenceDiagram
 
     alt malformed request (empty corpus, too large)
         Policy-->>PoliciesC: 400 with MineError JSON (message)
-        PoliciesC--xCaller: WardenError::Server status=400 body=raw
+        PoliciesC--xCaller: ClavenarError::Server status=400 body=raw
         Caller->>ParseMine: parse_mine_error(body)
         ParseMine-->>Caller: Some(MineError) (surface as toast)
     else ok
@@ -369,7 +369,7 @@ sequenceDiagram
   `Option`, not `Result`. A `None` means the 400 body did not
   match the typed envelope shape — most likely a future server
   version emitting a different envelope. Callers fall through to
-  rendering `WardenError::Server.body` raw, which keeps the SDK
+  rendering `ClavenarError::Server.body` raw, which keeps the SDK
   forward-compatible without breaking call sites.
 - `EvaluateBatchError` carries `active_compile_ok` and
   `candidate_compile_ok` as separate flags. The Lab UI uses
@@ -410,10 +410,10 @@ flowchart LR
         fresh --> wire
         wire --> status{{"HTTP status?"}}
         status -- "200 / 201" --> ok["serde_json::from_str -> typed value"]
-        status -- "401" --> unauth["WardenError::Unauthorized(body)"]
-        status -- "400" --> bad["WardenError::BadRequest(body)"]
-        status -- "403 (WardenClient only)" --> veto["parse_veto -> WardenError::Veto<br/>structured fields OR raw verbatim"]
-        status -- "any other (5xx, 409, 422, 503...)" --> server["WardenError::Server (status + body)"]
+        status -- "401" --> unauth["ClavenarError::Unauthorized(body)"]
+        status -- "400" --> bad["ClavenarError::BadRequest(body)"]
+        status -- "403 (ClavenarClient only)" --> veto["parse_veto -> ClavenarError::Veto<br/>structured fields OR raw verbatim"]
+        status -- "any other (5xx, 409, 422, 503...)" --> server["ClavenarError::Server (status + body)"]
         ok --> caller["typed result to Caller"]
     end
 ```
@@ -427,10 +427,10 @@ flowchart LR
   TLS identities between calls without disturbing in-flight
   requests. reqwest's connection pool retains the old identity
   for any connection that has not idled out.
-- 403 dispatch is **WardenClient-only**. `parse_veto` lives in
+- 403 dispatch is **ClavenarClient-only**. `parse_veto` lives in
   `client.rs` because only `POST /mcp` produces a security veto.
   Other surfaces' 403s (e.g. capability denied on
-  `/agents/{id}/suspend`) fall through to `WardenError::Server`
+  `/agents/{id}/suspend`) fall through to `ClavenarError::Server`
   with status 403 — no false projection into `Veto`.
 - The status dispatch table is the SDK's stability contract. New
   status codes the SDK does not understand land in `Server` so
@@ -441,7 +441,7 @@ flowchart LR
 
 ## Source pointers
 
-- Proxy hot path: `src/client.rs::WardenClient` (`builder`,
+- Proxy hot path: `src/client.rs::ClavenarClient` (`builder`,
   `call_tool`, `send_jsonrpc`, `send_raw`, `parse_veto`)
 - Auth + non-exhaustive enum: `src/client.rs::Auth`
 - Ledger reads: `src/ledger.rs::LedgerClient`
@@ -464,4 +464,4 @@ flowchart LR
 - HTTP plumbing: `src/http.rs` (`HttpProvider`,
   `StaticHttpClient`, `default_provider`, `parse_base_url`,
   `decode_response`, `percent_encode`)
-- Error envelope: `src/error.rs::WardenError`
+- Error envelope: `src/error.rs::ClavenarError`

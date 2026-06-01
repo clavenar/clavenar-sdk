@@ -3,7 +3,7 @@
 //! Centralizes the two pieces every client used to copy: a minimal
 //! path-segment percent-encoder (we don't pull `percent-encoding` for
 //! one site each) and the status-code → typed-error dispatch every
-//! authenticated client uses on its decode path. `WardenClient` keeps
+//! authenticated client uses on its decode path. `ClavenarClient` keeps
 //! its own dispatch because of the FORBIDDEN → `Veto` parse step;
 //! `LedgerClient` keeps its own because it predates this module and
 //! has no 401/400 surface to dispatch on.
@@ -21,7 +21,7 @@ use std::sync::Arc;
 use reqwest::{Client, StatusCode};
 use url::Url;
 
-use crate::WardenError;
+use crate::ClavenarError;
 
 /// Source of a `reqwest::Client` for a per-request hot path.
 ///
@@ -66,8 +66,8 @@ impl HttpProvider for StaticHttpClient {
 
 /// Internal: build the default plain-HTTP `StaticHttpClient` for a
 /// per-service client's `new()` constructor.
-pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, WardenError> {
-    let client = Client::builder().build().map_err(WardenError::Transport)?;
+pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError> {
+    let client = Client::builder().build().map_err(ClavenarError::Transport)?;
     Ok(Arc::new(StaticHttpClient::new(client)))
 }
 
@@ -79,9 +79,9 @@ pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, WardenError> {
 /// `http://h/mcp` and silently drops the `/api` prefix. Forcing a
 /// trailing slash makes every subsequent `join` behave as append, which
 /// is what every caller in this crate actually wants.
-pub(crate) fn parse_base_url(s: &str) -> Result<Url, WardenError> {
+pub(crate) fn parse_base_url(s: &str) -> Result<Url, ClavenarError> {
     let mut url = Url::parse(s)
-        .map_err(|e| WardenError::InvalidConfig(format!("base_url: {e}")))?;
+        .map_err(|e| ClavenarError::InvalidConfig(format!("base_url: {e}")))?;
     if !url.path().ends_with('/') {
         let with_slash = format!("{}/", url.path());
         url.set_path(&with_slash);
@@ -95,14 +95,14 @@ pub(crate) fn parse_base_url(s: &str) -> Result<Url, WardenError> {
 pub(crate) fn decode_response<T: serde::de::DeserializeOwned>(
     status: StatusCode,
     body: String,
-) -> Result<T, WardenError> {
+) -> Result<T, ClavenarError> {
     match status {
         StatusCode::OK | StatusCode::CREATED => {
-            serde_json::from_str(&body).map_err(WardenError::Decode)
+            serde_json::from_str(&body).map_err(ClavenarError::Decode)
         }
-        StatusCode::UNAUTHORIZED => Err(WardenError::Unauthorized(body)),
-        StatusCode::BAD_REQUEST => Err(WardenError::BadRequest(body)),
-        other => Err(WardenError::Server { status: other, body }),
+        StatusCode::UNAUTHORIZED => Err(ClavenarError::Unauthorized(body)),
+        StatusCode::BAD_REQUEST => Err(ClavenarError::BadRequest(body)),
+        other => Err(ClavenarError::Server { status: other, body }),
     }
 }
 
@@ -143,16 +143,16 @@ mod tests {
     fn decode_response_routes_typed_4xx_arms() {
         let r: Result<serde_json::Value, _> =
             decode_response(StatusCode::UNAUTHORIZED, "missing bearer".into());
-        assert!(matches!(r, Err(WardenError::Unauthorized(_))));
+        assert!(matches!(r, Err(ClavenarError::Unauthorized(_))));
 
         let r: Result<serde_json::Value, _> =
             decode_response(StatusCode::BAD_REQUEST, "missing field".into());
-        assert!(matches!(r, Err(WardenError::BadRequest(_))));
+        assert!(matches!(r, Err(ClavenarError::BadRequest(_))));
 
         let r: Result<serde_json::Value, _> =
             decode_response(StatusCode::CONFLICT, "version_conflict".into());
         match r {
-            Err(WardenError::Server { status, .. }) => {
+            Err(ClavenarError::Server { status, .. }) => {
                 assert_eq!(status, StatusCode::CONFLICT);
             }
             other => panic!("expected Server, got {other:?}"),
@@ -177,7 +177,7 @@ mod tests {
     fn parse_base_url_rejects_garbage() {
         assert!(matches!(
             parse_base_url("not a url"),
-            Err(WardenError::InvalidConfig(_))
+            Err(ClavenarError::InvalidConfig(_))
         ));
     }
 
