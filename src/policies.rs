@@ -216,6 +216,11 @@ pub struct BatchVerdict {
 pub struct BatchVerdictResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub correlation_id: Option<String>,
+    /// The reconstructed Rego input the candidate rule evaluated,
+    /// echoed by the policy-engine so the Lab can show what the rule
+    /// keyed on. `None` against an older engine that doesn't echo it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<serde_json::Value>,
     pub before: BatchVerdict,
     pub after: BatchVerdict,
     pub diff: DiffClass,
