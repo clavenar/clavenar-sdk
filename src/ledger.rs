@@ -30,11 +30,11 @@ use reqwest::{Client, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::WardenError;
+use crate::ClavenarError;
 use crate::http::{default_provider, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
-/// the server-side `warden_ledger::LedgerEntry`. `correlation_id` is
+/// the server-side `clavenar_ledger::LedgerEntry`. `correlation_id` is
 /// `None` on rows produced by older publishers (pre-correlation-id);
 /// new rows always carry it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,15 +59,15 @@ pub struct LedgerEntry {
     #[serde(default = "default_chain_version")]
     pub chain_version: i64,
     /// Origin tag the proxy stamped on the forensic event when the
-    /// `x-warden-source` request header was set. `Some("simulator")` for
-    /// warden-simulator-driven traffic, `None` for real agents and for
+    /// `x-clavenar-source` request header was set. `Some("simulator")` for
+    /// clavenar-simulator-driven traffic, `None` for real agents and for
     /// rows produced by publishers that don't yet stamp the field
     /// (policy engine, HIL — these inherit the request's source via
     /// `correlation_id` join, not via this column). UI affordance, not
-    /// a security claim — see the warning in `warden_ledger`.
+    /// a security claim — see the warning in `clavenar_ledger`.
     #[serde(default)]
     pub source: Option<String>,
-    /// Rejection / annotation signal (warden-specs/TECH_SPEC.md#agent-onboarding-wao §6.3 vocabulary):
+    /// Rejection / annotation signal (clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §6.3 vocabulary):
     /// `unregistered_agent`, `scope_outside_envelope`,
     /// `yellow_scope_outside_envelope`, `agent_suspended`,
     /// `agent_decommissioned`, `attestation_kind_not_accepted`,
@@ -76,8 +76,8 @@ pub struct LedgerEntry {
     /// deep link on unregistered_agent rows.
     #[serde(default)]
     pub signal: Option<String>,
-    /// Chain v3 — Warden Agent Onboarding lifecycle event kind
-    /// (warden-specs/TECH_SPEC.md#agent-onboarding-wao §7.2). `None` on every v1/v2 row.
+    /// Chain v3 — Clavenar Agent Onboarding lifecycle event kind
+    /// (clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §7.2). `None` on every v1/v2 row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_kind: Option<String>,
     /// v3 — Tenant the lifecycle row belongs to.
@@ -100,7 +100,7 @@ pub struct LedgerEntry {
     /// joins them onto the row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_sha256: Option<String>,
-    /// Warden-issued signature over the v2 hashable. Carried as the
+    /// Clavenar-issued signature over the v2 hashable. Carried as the
     /// Vault Transit envelope (`vault:v<N>:<base64>`); the verifier
     /// parses the envelope and checks against the JWKS-served
     /// public key for `key_id`. Hashable on v2 — tampering with the
@@ -117,7 +117,7 @@ pub struct LedgerEntry {
     pub agent_spiffe: Option<String>,
     /// Per-decision approver claim. JSON-encoded blob whose
     /// shape varies by mode (see
-    /// `warden_ledger::LedgerEntry::approver_assertion`):
+    /// `clavenar_ledger::LedgerEntry::approver_assertion`):
     ///
     /// - WebAuthn: `{"method":"webauthn","credential_id":"…","iat":…}`
     /// - OIDC: `{"method":"oidc-session","sub":"…","iat":…}`
@@ -133,8 +133,8 @@ pub struct LedgerEntry {
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
 /// row's `payload_sha256` commits to. Mirrors
-/// `warden_ledger::LifecycleRow`. Powers the console's per-agent
-/// timeline (warden-specs/TECH_SPEC.md#agent-onboarding-wao §10.1).
+/// `clavenar_ledger::LifecycleRow`. Powers the console's per-agent
+/// timeline (clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §10.1).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LifecycleRow {
     #[serde(flatten)]
@@ -151,7 +151,7 @@ fn default_chain_version() -> i64 {
 }
 
 /// One bookkeeping row from the ledger's `exports` table. Mirrors the
-/// server-side `warden_ledger::export::ExportRecord`. Each row records
+/// server-side `clavenar_ledger::export::ExportRecord`. Each row records
 /// one cold-tier snapshot the export pipeline wrote out (Parquet data
 /// blob + Iceberg manifest), with enough pointers for an operator to
 /// fetch the artifacts and verify the SHA-256 themselves.
@@ -173,7 +173,7 @@ pub struct ExportRecord {
     pub seq_hi: i64,
 }
 
-/// Outcome of a chain re-hash. Mirrors `warden_ledger::VerifyResult`.
+/// Outcome of a chain re-hash. Mirrors `clavenar_ledger::VerifyResult`.
 /// `valid=false` with `first_invalid_seq=Some(n)` means the entry at
 /// `seq=n` is the first whose hash didn't match — that's a tamper.
 /// `valid=false` with `unsupported_chain_version=Some(v)` means the
@@ -257,7 +257,7 @@ pub struct LedgerClient {
 impl LedgerClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8083`).
     /// Returns `InvalidConfig` if the URL is malformed.
-    pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
         Ok(Self { base_url: url, http })
@@ -283,7 +283,7 @@ impl LedgerClient {
     /// Read-only access to the configured base URL. Exposed so a
     /// caller can construct streaming requests (e.g. SSE) that don't
     /// fit the JSON-only `get_json` path the rest of this client uses
-    /// — the warden-console live-tail proxy is the first such caller.
+    /// — the clavenar-console live-tail proxy is the first such caller.
     /// Treat it as wire-level: the SDK still owns canonical request
     /// shaping, but a streaming response can't ride through the
     /// `get_json` decode pipeline.
@@ -304,7 +304,7 @@ impl LedgerClient {
     pub async fn audit_correlation(
         &self,
         correlation_id: &str,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         // `Url::join` doesn't percent-encode path segments — we have
         // to do it ourselves so a correlation_id with a `/` or `?` in
         // it doesn't reroute the request. UUIDs are hex-only, so the
@@ -322,7 +322,7 @@ impl LedgerClient {
     pub async fn audit_agent(
         &self,
         agent_id: &str,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!("audit/{}", percent_encode(agent_id));
         self.get_json(&path).await
     }
@@ -330,7 +330,7 @@ impl LedgerClient {
     /// `GET /audit/{agent_id}?limit=N&offset=M` — newest-first slice
     /// of size `N` skipping `M` rows. Backward-compatible companion to
     /// [`audit_agent`]: the legacy ASC-ordered, full-chain shape stays
-    /// addressable via that method, while UI callers (the warden-console
+    /// addressable via that method, while UI callers (the clavenar-console
     /// audit page) hit this one so memory and bandwidth scale with
     /// `per_page` instead of chain depth.
     pub async fn audit_agent_paged(
@@ -338,7 +338,7 @@ impl LedgerClient {
         agent_id: &str,
         limit: usize,
         offset: usize,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         // Plain query-string concatenation. limit/offset are integers;
         // no percent-encoding needed for the values themselves.
         let path = format!(
@@ -359,7 +359,7 @@ impl LedgerClient {
         agent_id: &str,
         limit: usize,
         before_seq: i64,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!(
             "audit/{}?limit={}&before={}",
             percent_encode(agent_id),
@@ -379,7 +379,7 @@ impl LedgerClient {
         agent_id: &str,
         limit: usize,
         after_seq: i64,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!(
             "audit/{}?limit={}&after={}",
             percent_encode(agent_id),
@@ -400,7 +400,7 @@ impl LedgerClient {
         limit: usize,
         offset: usize,
         since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!(
             "audit/{}?limit={}&offset={}&since={}",
             percent_encode(agent_id),
@@ -418,7 +418,7 @@ impl LedgerClient {
         limit: usize,
         before_seq: i64,
         since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!(
             "audit/{}?limit={}&before={}&since={}",
             percent_encode(agent_id),
@@ -436,7 +436,7 @@ impl LedgerClient {
         limit: usize,
         after_seq: i64,
         since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<LedgerEntry>, WardenError> {
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!(
             "audit/{}?limit={}&after={}&since={}",
             percent_encode(agent_id),
@@ -451,7 +451,7 @@ impl LedgerClient {
     /// `agent_id`. The console uses this with `audit_agent_paged` to
     /// compute total-pages without paying for the full row read. Cheap
     /// (`COUNT(*)` against the indexed column).
-    pub async fn audit_agent_count(&self, agent_id: &str) -> Result<usize, WardenError> {
+    pub async fn audit_agent_count(&self, agent_id: &str) -> Result<usize, ClavenarError> {
         // Tiny one-field response shape. Mirror it inline rather than
         // exposing a `pub struct Count {...}` — the field is incidental
         // to this single call's wire contract.
@@ -471,7 +471,7 @@ impl LedgerClient {
     /// `GET /verify` — re-hash every entry and check the chain. Cheap
     /// for a few thousand entries; not intended to be called on a
     /// hot path.
-    pub async fn verify(&self) -> Result<VerifyResult, WardenError> {
+    pub async fn verify(&self) -> Result<VerifyResult, ClavenarError> {
         self.get_json("verify").await
     }
 
@@ -480,7 +480,7 @@ impl LedgerClient {
     /// "all agents" default for the audit page so any CN that has
     /// logged a row appears, not just those known to the simulator
     /// roster.
-    pub async fn list_agents(&self) -> Result<Vec<String>, WardenError> {
+    pub async fn list_agents(&self) -> Result<Vec<String>, ClavenarError> {
         // Inline shape — single-field response, identical pattern to
         // `audit_agent_count` above.
         #[derive(Deserialize)]
@@ -502,7 +502,7 @@ impl LedgerClient {
         &self,
         tenant: &str,
         agent_id: &str,
-    ) -> Result<Vec<LifecycleRow>, WardenError> {
+    ) -> Result<Vec<LifecycleRow>, ClavenarError> {
         let path = format!(
             "audit/agent/{}/{}/lifecycle",
             percent_encode(tenant),
@@ -519,7 +519,7 @@ impl LedgerClient {
     pub async fn replay_corpus(
         &self,
         params: ReplayCorpusParams,
-    ) -> Result<ReplayCorpus, WardenError> {
+    ) -> Result<ReplayCorpus, ClavenarError> {
         let mut path = format!(
             "audit/replay/corpus?since={}&limit={}",
             percent_encode(&params.since.to_rfc3339()),
@@ -545,7 +545,7 @@ impl LedgerClient {
     /// the sink isn't configured — the table exists either way, the
     /// rows are just absent). Cheap call: it's a `SELECT *` over what
     /// is typically a small bookkeeping table.
-    pub async fn list_exports(&self) -> Result<Vec<ExportRecord>, WardenError> {
+    pub async fn list_exports(&self) -> Result<Vec<ExportRecord>, ClavenarError> {
         self.get_json("exports").await
     }
 
@@ -553,7 +553,7 @@ impl LedgerClient {
     /// produce a regulatory `.tar.gz` for the half-open time window
     /// `[from, to)`. Returns the raw bundle bytes. The bundle layout
     /// and auditor verification recipe live in
-    /// `warden-ledger/src/regulatory.rs`. Manifest schema v3 ships
+    /// `clavenar-ledger/src/regulatory.rs`. Manifest schema v3 ships
     /// chain rows plus optional operator prose, optional Parquet
     /// pointers, and an optional ed25519 detached signature.
     ///
@@ -576,7 +576,7 @@ impl LedgerClient {
         from: &chrono::DateTime<chrono::Utc>,
         to: &chrono::DateTime<chrono::Utc>,
         opts: RegulatoryExportOptions,
-    ) -> Result<Vec<u8>, WardenError> {
+    ) -> Result<Vec<u8>, ClavenarError> {
         // RFC 3339 on both bounds — same format the ledger uses for
         // chain timestamps. `to_rfc3339_opts` with `SecondsFormat::Secs`
         // produces a stable shape across hosts.
@@ -593,7 +593,7 @@ impl LedgerClient {
         let endpoint = self
             .base_url
             .join(&path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let http = self.http.client();
         let mut req = http.post(endpoint);
         if let Some(readme) = opts.readme {
@@ -609,7 +609,7 @@ impl LedgerClient {
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(WardenError::Server { status, body });
+            return Err(ClavenarError::Server { status, body });
         }
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
@@ -621,18 +621,18 @@ impl LedgerClient {
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let endpoint = self
             .base_url
             .join(path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().get(endpoint).send().await?;
         let status = resp.status();
         let raw = resp.text().await?;
         if status == StatusCode::OK {
-            serde_json::from_str(&raw).map_err(WardenError::Decode)
+            serde_json::from_str(&raw).map_err(ClavenarError::Decode)
         } else {
-            Err(WardenError::Server { status, body: raw })
+            Err(ClavenarError::Server { status, body: raw })
         }
     }
 }
@@ -813,7 +813,7 @@ mod tests {
             "actor_idp": "okta",
             "payload_sha256": "cd".repeat(32),
             "signature": "vault:v1:ZmFrZQ==",
-            "key_id": "warden-identity:v1",
+            "key_id": "clavenar-identity:v1",
             "payload": {
                 "owner_team": "payments",
                 "scope_envelope": ["mcp:read:tickets"]
@@ -990,7 +990,7 @@ mod tests {
         }
 
         // Path B: readme + include_exports → body, header, query flag.
-        let prose = b"# Warden\n\nProse here.\n";
+        let prose = b"# Clavenar\n\nProse here.\n";
         let _ = client
             .regulatory_export(
                 &from,
@@ -1014,7 +1014,7 @@ mod tests {
 
     #[tokio::test]
     async fn regulatory_export_propagates_4xx_as_server_error() {
-        // A 400 / 413 from the ledger lands as `WardenError::Server`
+        // A 400 / 413 from the ledger lands as `ClavenarError::Server`
         // with the status preserved. Lets ctl distinguish "operator
         // misuse" (validation, payload too large) from transport.
         use axum::http::StatusCode;
@@ -1043,13 +1043,13 @@ mod tests {
         let err = client
             .regulatory_export(&from, &to, RegulatoryExportOptions::default())
             .await
-            .expect_err("413 must surface as WardenError::Server");
+            .expect_err("413 must surface as ClavenarError::Server");
         match err {
-            WardenError::Server { status, body } => {
+            ClavenarError::Server { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
                 assert!(body.contains("too big"));
             }
-            other => panic!("expected WardenError::Server, got {other:?}"),
+            other => panic!("expected ClavenarError::Server, got {other:?}"),
         }
         let _ = kill_tx.send(());
     }

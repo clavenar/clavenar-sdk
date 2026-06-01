@@ -1,17 +1,17 @@
-//! Async Rust client for Agent Warden.
+//! Async Rust client for Clavenar.
 //!
 //! This crate is the OIDC/SPIFFE-aware client lib called out in the
-//! Tier-2 GTM plan, paired with `warden-lite`: lite is the OSS proxy
+//! Tier-2 GTM plan, paired with `clavenar-lite`: lite is the OSS proxy
 //! you put in front of an agent, this SDK is what an external app calls
 //! when it needs to talk to that proxy without relearning the wire
 //! contract on every integration.
 //!
 //! Two thin clients live here:
 //!
-//! * [`WardenClient`] — wraps the proxy's `POST /mcp` surface. Returns
+//! * [`ClavenarClient`] — wraps the proxy's `POST /mcp` surface. Returns
 //!   either the upstream JSON-RPC response or a typed
-//!   [`WardenError::Veto`] parsed from the structured 403 body that
-//!   `warden-lite` emits. The full-edition `warden-proxy` returns a
+//!   [`ClavenarError::Veto`] parsed from the structured 403 body that
+//!   `clavenar-lite` emits. The full-edition `clavenar-proxy` returns a
 //!   plain-text 403 today; the verbatim body is preserved on the
 //!   `Veto.raw` field so callers don't lose information either way.
 //!
@@ -25,17 +25,17 @@
 //! # Quick start
 //!
 //! ```no_run
-//! use warden_sdk::{Auth, WardenClient, WardenError};
+//! use clavenar_sdk::{Auth, ClavenarClient, ClavenarError};
 //! use serde_json::json;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let client = WardenClient::builder("http://localhost:8088")?
+//! let client = ClavenarClient::builder("http://localhost:8088")?
 //!     .auth(Auth::Bearer("dev-token".into()))
 //!     .build()?;
 //!
 //! match client.call_tool("search", json!({"q": "rust async"})).await {
 //!     Ok(reply)              => println!("{}", reply),
-//!     Err(WardenError::Veto { intent_category, reasons, .. }) => {
+//!     Err(ClavenarError::Veto { intent_category, reasons, .. }) => {
 //!         eprintln!("blocked ({}): {:?}", intent_category, reasons);
 //!     }
 //!     Err(e)                 => return Err(e.into()),
@@ -57,8 +57,8 @@ pub use agents::{
     CreateAgentRequest, EnvelopeRequest, LifecycleRequest, LifecycleResponse,
     MIGRATION_ACTOR_SUB_PREFIX,
 };
-pub use client::{Auth, WardenClient, WardenClientBuilder};
-pub use error::WardenError;
+pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
+pub use error::ClavenarError;
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
     CorpusEntry, ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions,

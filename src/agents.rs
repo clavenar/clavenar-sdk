@@ -1,17 +1,17 @@
-//! Async client for the Warden Agent Onboarding (`/agents`) surface.
+//! Async client for the Clavenar Agent Onboarding (`/agents`) surface.
 //!
-//! Mirrors the `warden-identity` server-side handlers in
+//! Mirrors the `clavenar-identity` server-side handlers in
 //! `agents.rs`: every call here corresponds 1:1 with a route there.
 //! Ships the full lifecycle surface — `list`, `get`, `create`,
 //! `suspend` / `unsuspend` / `decommission`, `envelope_narrow` /
 //! `envelope_widen`, `attestation_kinds`, `transfer_owner_team`,
 //! `set_description`, plus the helper `find_by_name` used by
-//! `wardenctl agents create --if-absent` for idempotent IaC patterns.
+//! `clavenarctl agents create --if-absent` for idempotent IaC patterns.
 //!
 //! ## Auth model
 //!
 //! Every `/agents` endpoint takes `Authorization: Bearer <oidc_id_token>`
-//! per warden-specs/TECH_SPEC.md#agent-onboarding-wao §5.1. The server validates the token against the
+//! per clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §5.1. The server validates the token against the
 //! per-tenant JWKS and resolves the caller's IdP groups to capability
 //! strings via the configured `[capabilities.tenants.<tid>]` map.
 //! From the SDK's perspective, the only auth surface is the bearer
@@ -22,18 +22,18 @@
 //!
 //! [`AgentRecord`] is duplicated verbatim from the server-side struct
 //! per the no-shared-crate repo convention. Cross-repo wire-shape changes need a
-//! grep across `warden-identity`, `warden-sdk`, `warden-console`,
-//! `wardenctl` before any rename.
+//! grep across `clavenar-identity`, `clavenar-sdk`, `clavenar-console`,
+//! `clavenarctl` before any rename.
 
 use std::sync::Arc;
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::WardenError;
+use crate::ClavenarError;
 use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
 
-/// Agent lifecycle state per warden-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
+/// Agent lifecycle state per clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AgentState {
@@ -78,7 +78,7 @@ impl<'de> Deserialize<'de> for AgentState {
 }
 
 /// One row of the `agents` table, mirrored from
-/// `warden-identity::agents::AgentRecord`. Field order, types, and
+/// `clavenar-identity::agents::AgentRecord`. Field order, types, and
 /// serde derives are intentional copies — a future rename touches both
 /// repos in one PR sweep.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -136,7 +136,7 @@ pub struct CreateAgentRequest<'a> {
 }
 
 /// Wire constant for the migration `actor_sub` prefix — must match
-/// `warden-identity::agents::MIGRATION_ACTOR_SUB_PREFIX`. Duplicated
+/// `clavenar-identity::agents::MIGRATION_ACTOR_SUB_PREFIX`. Duplicated
 /// because there's no shared crate (per repo convention).
 pub const MIGRATION_ACTOR_SUB_PREFIX: &str = "system:migration:";
 
@@ -178,7 +178,7 @@ pub struct LifecycleResponse {
 }
 
 /// Compare a [`CreateAgentRequest`] against an existing
-/// [`AgentRecord`] for the `wardenctl agents create --if-absent`
+/// [`AgentRecord`] for the `clavenarctl agents create --if-absent`
 /// idempotency check. Returns `true` when the request would land the
 /// row already in place (envelopes equal as sets, owner_team and
 /// attestation_kinds match) — the CLI exits 0 in that case rather
@@ -201,7 +201,7 @@ pub fn create_request_matches(req: &CreateAgentRequest<'_>, record: &AgentRecord
     // Description is intentionally not part of idempotency check —
     // operators routinely tweak descriptions without wanting the IaC
     // job to re-trip a 409. The CLI surfaces description as a
-    // separate `wardenctl agents description` step.
+    // separate `clavenarctl agents description` step.
     true
 }
 
@@ -235,7 +235,7 @@ pub struct AgentsClient {
 impl AgentsClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8086`).
     /// Returns `InvalidConfig` if the URL is malformed.
-    pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
         Ok(Self {
@@ -259,7 +259,7 @@ impl AgentsClient {
         self
     }
 
-    /// Builder-style attachment of an OIDC `id_token`. Per warden-specs/TECH_SPEC.md#agent-onboarding-wao
+    /// Builder-style attachment of an OIDC `id_token`. Per clavenar-specs/TECH_SPEC.md#agent-onboarding-wao
     /// §5.1 every `/agents` call expects a bearer; CLI / console
     /// callers per-request rebuild a client whose bearer is the
     /// session's id_token (rather than holding a long-lived service
@@ -275,7 +275,7 @@ impl AgentsClient {
     }
 
     /// `true` when a bearer was attached via [`AgentsClient::with_bearer`].
-    /// Used by warden-console's `/config` page to render
+    /// Used by clavenar-console's `/config` page to render
     /// `configured (sha256: ab12cd34)` vs `unset` without ever copying the
     /// raw token into handler scope. See also [`bearer_fingerprint`].
     ///
@@ -316,11 +316,11 @@ impl AgentsClient {
         &self,
         tenant: &str,
         filter: AgentListFilter,
-    ) -> Result<Vec<AgentRecord>, WardenError> {
+    ) -> Result<Vec<AgentRecord>, ClavenarError> {
         let mut url = self
             .base_url
             .join("agents")
-            .map_err(|e| WardenError::InvalidConfig(format!("join agents: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join agents: {e}")))?;
         {
             let mut q = url.query_pairs_mut();
             q.append_pair("tenant", tenant);
@@ -335,21 +335,21 @@ impl AgentsClient {
     }
 
     /// `GET /agents/{id}?tenant=<t>` — a single agent record. Returns
-    /// [`WardenError::Server`] with status 404 when the id doesn't
+    /// [`ClavenarError::Server`] with status 404 when the id doesn't
     /// resolve in `tenant` (the server intentionally elides
     /// "exists-but-cross-tenant" — see `agents.rs::get_handler`).
-    pub async fn get(&self, id: &str, tenant: &str) -> Result<AgentRecord, WardenError> {
+    pub async fn get(&self, id: &str, tenant: &str) -> Result<AgentRecord, ClavenarError> {
         let path = format!("agents/{}", percent_encode(id));
         let mut url = self
             .base_url
             .join(&path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         url.query_pairs_mut().append_pair("tenant", tenant);
         self.get_json(url).await
     }
 
     /// Look up a record by `(tenant, agent_name)`. Used by
-    /// `wardenctl agents create --if-absent` to decide between
+    /// `clavenarctl agents create --if-absent` to decide between
     /// "create a new row" and "compare against existing." Returns
     /// `Ok(None)` when no match — distinct from a 404 for an unknown
     /// id, which surfaces as `Err(Server)`.
@@ -357,7 +357,7 @@ impl AgentsClient {
         &self,
         tenant: &str,
         agent_name: &str,
-    ) -> Result<Option<AgentRecord>, WardenError> {
+    ) -> Result<Option<AgentRecord>, ClavenarError> {
         // The server doesn't expose `?agent_name=` so we filter
         // client-side. The list is bounded by tenant, which keeps
         // worst-case fan-out tied to a single tenant's registration
@@ -367,10 +367,10 @@ impl AgentsClient {
     }
 
     /// `POST /agents` — register a new agent. Body shape mirrors
-    /// `warden-identity::agents::CreateAgentRequest` (spec §5.2).
+    /// `clavenar-identity::agents::CreateAgentRequest` (spec §5.2).
     /// Returns the full record with the `spiffe_id_pattern` field
     /// surfaced under the same envelope.
-    pub async fn create(&self, req: &CreateAgentRequest<'_>) -> Result<AgentCreated, WardenError> {
+    pub async fn create(&self, req: &CreateAgentRequest<'_>) -> Result<AgentCreated, ClavenarError> {
         let url = self.join("agents")?;
         self.post_json(url, req).await
     }
@@ -382,7 +382,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         reason: Option<&str>,
-    ) -> Result<LifecycleResponse, WardenError> {
+    ) -> Result<LifecycleResponse, ClavenarError> {
         self.lifecycle_call(id, tenant, "suspend", reason).await
     }
 
@@ -392,7 +392,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         reason: Option<&str>,
-    ) -> Result<LifecycleResponse, WardenError> {
+    ) -> Result<LifecycleResponse, ClavenarError> {
         self.lifecycle_call(id, tenant, "unsuspend", reason).await
     }
 
@@ -404,7 +404,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         reason: Option<&str>,
-    ) -> Result<LifecycleResponse, WardenError> {
+    ) -> Result<LifecycleResponse, ClavenarError> {
         self.lifecycle_call(id, tenant, "decommission", reason).await
     }
 
@@ -415,7 +415,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         envelope: EnvelopeRequest<'_>,
-    ) -> Result<AgentRecord, WardenError> {
+    ) -> Result<AgentRecord, ClavenarError> {
         let url = self.id_with_tenant(id, "envelope/narrow", tenant)?;
         self.post_json(url, &envelope).await
     }
@@ -426,7 +426,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         envelope: EnvelopeRequest<'_>,
-    ) -> Result<AgentRecord, WardenError> {
+    ) -> Result<AgentRecord, ClavenarError> {
         let url = self.id_with_tenant(id, "envelope/widen", tenant)?;
         self.post_json(url, &envelope).await
     }
@@ -438,7 +438,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         kinds: &[String],
-    ) -> Result<AgentRecord, WardenError> {
+    ) -> Result<AgentRecord, ClavenarError> {
         let url = self.id_with_tenant(id, "attestation-kinds", tenant)?;
         let body = serde_json::json!({ "attestation_kinds": kinds });
         self.post_json(url, &body).await
@@ -450,7 +450,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         new_team: &str,
-    ) -> Result<AgentRecord, WardenError> {
+    ) -> Result<AgentRecord, ClavenarError> {
         let url = self.id_with_tenant(id, "owner-team", tenant)?;
         let body = serde_json::json!({ "owner_team": new_team });
         self.post_json(url, &body).await
@@ -463,7 +463,7 @@ impl AgentsClient {
         id: &str,
         tenant: &str,
         text: Option<&str>,
-    ) -> Result<AgentRecord, WardenError> {
+    ) -> Result<AgentRecord, ClavenarError> {
         let url = self.id_with_tenant(id, "description", tenant)?;
         let body = serde_json::json!({ "description": text });
         self.post_json(url, &body).await
@@ -473,22 +473,22 @@ impl AgentsClient {
     /// `verb` is appended verbatim — callers pass it as a constant
     /// (`"suspend"`, `"envelope/narrow"`, …) so the path-segment
     /// boundaries can't be confused.
-    fn id_with_tenant(&self, id: &str, verb: &str, tenant: &str) -> Result<Url, WardenError> {
+    fn id_with_tenant(&self, id: &str, verb: &str, tenant: &str) -> Result<Url, ClavenarError> {
         let path = format!("agents/{}/{}", percent_encode(id), verb);
         let mut url = self
             .base_url
             .join(&path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         url.query_pairs_mut().append_pair("tenant", tenant);
         Ok(url)
     }
 
     /// Relative path joiner used by writes that take their tenant in
     /// the body (currently just `POST /agents`).
-    fn join(&self, suffix: &str) -> Result<Url, WardenError> {
+    fn join(&self, suffix: &str) -> Result<Url, ClavenarError> {
         self.base_url
             .join(suffix)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {suffix}: {e}")))
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {suffix}: {e}")))
     }
 
     async fn lifecycle_call(
@@ -497,7 +497,7 @@ impl AgentsClient {
         tenant: &str,
         verb: &str,
         reason: Option<&str>,
-    ) -> Result<LifecycleResponse, WardenError> {
+    ) -> Result<LifecycleResponse, ClavenarError> {
         let url = self.id_with_tenant(id, verb, tenant)?;
         let body = LifecycleRequest { reason };
         self.post_json(url, &body).await
@@ -507,7 +507,7 @@ impl AgentsClient {
     /// JSON. Errors on non-200 with the wire body for diagnostics.
     /// 401 maps to `Unauthorized`; 400 to `BadRequest`; all other
     /// non-200s funnel through `Server`.
-    async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> Result<T, WardenError> {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> Result<T, ClavenarError> {
         let mut req = self.http.client().get(url);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
@@ -527,7 +527,7 @@ impl AgentsClient {
         &self,
         url: Url,
         body: &B,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let mut req = self.http.client().post(url).json(body);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);
@@ -742,7 +742,7 @@ mod tests {
         let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
         let err = client.get("nope", "acme").await.unwrap_err();
         match err {
-            WardenError::Server { status, body } => {
+            ClavenarError::Server { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::NOT_FOUND);
                 assert!(body.contains("not_found"), "got body: {body}");
             }
@@ -1104,7 +1104,7 @@ mod tests {
         };
         let err = client.create(&req).await.unwrap_err();
         match err {
-            crate::WardenError::Server { status, body } => {
+            crate::ClavenarError::Server { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::CONFLICT);
                 assert!(body.contains("agent_name_taken"));
             }
@@ -1129,7 +1129,7 @@ mod tests {
         // After decommission, suspend → 409 agent_decommissioned.
         let err = client.suspend(&id, "acme", None).await.unwrap_err();
         match err {
-            crate::WardenError::Server { status, body } => {
+            crate::ClavenarError::Server { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::CONFLICT);
                 assert!(body.contains("agent_decommissioned"));
             }
@@ -1175,7 +1175,7 @@ mod tests {
             .await
             .unwrap_err();
         match err {
-            crate::WardenError::Server { status, body } => {
+            crate::ClavenarError::Server { status, body } => {
                 assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY);
                 assert!(body.contains("envelope_not_narrower"));
                 assert!(body.contains("mcp:write:invoices"));

@@ -7,10 +7,10 @@
 //!
 //! Coverage:
 //! * happy path `call_tool` — 200 + JSON body
-//! * structured-JSON veto from `warden-lite`
-//! * plain-text veto from full-edition `warden-proxy`
-//! * 401 → `WardenError::Unauthorized`
-//! * 400 → `WardenError::BadRequest`
+//! * structured-JSON veto from `clavenar-lite`
+//! * plain-text veto from full-edition `clavenar-proxy`
+//! * 401 → `ClavenarError::Unauthorized`
+//! * 400 → `ClavenarError::BadRequest`
 //! * `LedgerClient::audit_correlation` — typed `LedgerEntry` decode
 //! * `LedgerClient::verify` — typed `VerifyResult` decode
 //! * bearer header is forwarded
@@ -27,7 +27,7 @@ use axum::{
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
-use warden_sdk::{Auth, LedgerClient, WardenClient, WardenError};
+use clavenar_sdk::{Auth, LedgerClient, ClavenarClient, ClavenarError};
 
 use axum::extract::Query;
 use std::collections::HashMap;
@@ -75,7 +75,7 @@ async fn call_tool_happy_path_returns_upstream_json() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url).unwrap().build().unwrap();
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
     let reply = client
         .call_tool("search", json!({"q": "rust async"}))
         .await
@@ -87,7 +87,7 @@ async fn call_tool_happy_path_returns_upstream_json() {
 
 #[tokio::test]
 async fn call_tool_structured_veto_parses_fields() {
-    // Mirrors warden-lite's `DenyResponse` shape.
+    // Mirrors clavenar-lite's `DenyResponse` shape.
     let app = Router::new().route(
         "/mcp",
         post(|| async {
@@ -105,13 +105,13 @@ async fn call_tool_structured_veto_parses_fields() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url).unwrap().build().unwrap();
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
     let err = client
         .call_tool("sql_execute", json!({"query": "DROP TABLE x"}))
         .await
         .expect_err("expected veto");
     match err {
-        WardenError::Veto { intent_category, reasons, review_reasons, raw } => {
+        ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
             assert_eq!(intent_category, "DangerousTool");
             assert_eq!(reasons.len(), 1);
             assert!(reasons[0].contains("SQL"));
@@ -125,7 +125,7 @@ async fn call_tool_structured_veto_parses_fields() {
 
 #[tokio::test]
 async fn call_tool_plain_text_veto_keeps_body_in_raw() {
-    // Mirrors what full-edition warden-proxy returns today.
+    // Mirrors what full-edition clavenar-proxy returns today.
     let app = Router::new().route(
         "/mcp",
         post(|| async {
@@ -138,13 +138,13 @@ async fn call_tool_plain_text_veto_keeps_body_in_raw() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url).unwrap().build().unwrap();
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
     let err = client
         .call_tool("shell_exec", json!({"cmd": "rm -rf /"}))
         .await
         .expect_err("expected veto");
     match err {
-        WardenError::Veto { intent_category, reasons, review_reasons, raw } => {
+        ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
             // No structured fields, but the raw body is preserved.
             assert!(intent_category.is_empty());
             assert!(reasons.is_empty());
@@ -166,13 +166,13 @@ async fn unauthorized_response_maps_to_unauthorized_error() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url).unwrap().build().unwrap();
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
     let err = client
         .call_tool("search", json!({}))
         .await
         .expect_err("expected unauthorized");
     match err {
-        WardenError::Unauthorized(body) => assert!(body.contains("bearer")),
+        ClavenarError::Unauthorized(body) => assert!(body.contains("bearer")),
         other => panic!("expected Unauthorized, got {other:?}"),
     }
     drop(shutdown);
@@ -189,13 +189,13 @@ async fn bad_request_maps_to_bad_request_error() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url).unwrap().build().unwrap();
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
     let err = client
         .call_tool("search", json!({}))
         .await
         .expect_err("expected bad request");
     match err {
-        WardenError::BadRequest(body) => assert!(body.contains("method")),
+        ClavenarError::BadRequest(body) => assert!(body.contains("method")),
         other => panic!("expected BadRequest, got {other:?}"),
     }
     drop(shutdown);
@@ -223,7 +223,7 @@ async fn bearer_token_is_forwarded_in_authorization_header() {
     );
     let (url, shutdown) = spawn(app).await;
 
-    let client = WardenClient::builder(&url)
+    let client = ClavenarClient::builder(&url)
         .unwrap()
         .auth(Auth::Bearer("secret-token".into()))
         .build()
@@ -238,11 +238,11 @@ async fn bearer_token_is_forwarded_in_authorization_header() {
 
 #[tokio::test]
 async fn client_preserves_path_prefix_in_base_url() {
-    // Operator behind a reverse proxy at /warden/ prefix: every request
+    // Operator behind a reverse proxy at /clavenar/ prefix: every request
     // must carry that prefix. RFC 3986 reference resolution drops it
     // unless the base URL ends with `/`, so the SDK normalizes for us.
     let app = Router::new().route(
-        "/warden/mcp",
+        "/clavenar/mcp",
         post(|| async {
             (StatusCode::OK, Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})))
                 .into_response()
@@ -251,8 +251,8 @@ async fn client_preserves_path_prefix_in_base_url() {
     let (origin, shutdown) = spawn(app).await;
 
     // No trailing slash, has a path component — the case that used to break.
-    let prefixed = format!("{origin}/warden");
-    let client = WardenClient::builder(&prefixed).unwrap().build().unwrap();
+    let prefixed = format!("{origin}/clavenar");
+    let client = ClavenarClient::builder(&prefixed).unwrap().build().unwrap();
     let reply = client.call_tool("search", json!({})).await.expect("prefix preserved");
     assert_eq!(reply["result"], "ok");
     drop(shutdown);
@@ -433,12 +433,12 @@ async fn list_exports_decodes_export_records() {
     drop(shutdown);
 }
 
-// ── PoliciesClient (warden-specs/TECH_SPEC.md
+// ── PoliciesClient (clavenar-specs/TECH_SPEC.md
 //    #console-policy-management) ───────────────────────────────────────
 
 #[tokio::test]
 async fn policies_list_decodes_into_typed_rows() {
-    use warden_sdk::PoliciesClient;
+    use clavenar_sdk::PoliciesClient;
     let app = Router::new().route(
         "/policies",
         get(|| async {
@@ -482,7 +482,7 @@ async fn policies_list_decodes_into_typed_rows() {
 
 #[tokio::test]
 async fn policies_create_round_trips_typed_request_and_response() {
-    use warden_sdk::{CreatePolicyRequest, PoliciesClient};
+    use clavenar_sdk::{CreatePolicyRequest, PoliciesClient};
     let app = Router::new().route(
         "/policies",
         post(|Json(body): Json<Value>| async move {
@@ -513,7 +513,7 @@ async fn policies_create_round_trips_typed_request_and_response() {
         .create(&CreatePolicyRequest {
             name: "extra.rego",
             content_type: "rego",
-            body: "package warden.authz\nimport rego.v1\ndefault allow := false",
+            body: "package clavenar.authz\nimport rego.v1\ndefault allow := false",
             reason: "test",
             actor_sub: "alice",
             actor_idp: "oidc:test",
@@ -528,7 +528,7 @@ async fn policies_create_round_trips_typed_request_and_response() {
 
 #[tokio::test]
 async fn policies_update_409_carries_conflict_response() {
-    use warden_sdk::{PoliciesClient, UpdatePolicyRequest};
+    use clavenar_sdk::{PoliciesClient, UpdatePolicyRequest};
     let app = Router::new().route(
         "/policies/{name}",
         axum::routing::put(|Path(_n): Path<String>| async {
@@ -552,14 +552,14 @@ async fn policies_update_409_carries_conflict_response() {
     );
     let (url, shutdown) = spawn(app).await;
     let client = PoliciesClient::new(&url).unwrap();
-    // `WardenClient` doesn't impl `Debug`, so `expect_err` would
+    // `ClavenarClient` doesn't impl `Debug`, so `expect_err` would
     // need a `Debug` bound on the success arm. The `match` form is
     // both `Debug`-free and clippy-happy.
     let result = client
         .update(
             "governance.rego",
             &UpdatePolicyRequest {
-                body: "package warden.authz\ndefault allow := false",
+                body: "package clavenar.authz\ndefault allow := false",
                 reason: "test",
                 actor_sub: "alice",
                 actor_idp: "oidc:test",
@@ -571,7 +571,7 @@ async fn policies_update_409_carries_conflict_response() {
         Ok(_) => panic!("expected 409"),
         Err(e) => e,
     };
-    let WardenError::Server { status, body } = err else {
+    let ClavenarError::Server { status, body } = err else {
         panic!("expected Server, got {err}");
     };
     assert_eq!(status, StatusCode::CONFLICT);

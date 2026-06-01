@@ -1,7 +1,7 @@
-//! Async client for the warden-simulator admin HTTP surface.
+//! Async client for the clavenar-simulator admin HTTP surface.
 //!
 //! Three calls cover the operator surface needed by the
-//! `warden-console` `/sim` panel:
+//! `clavenar-console` `/sim` panel:
 //!
 //! * [`SimClient::status`] — live snapshot: traffic multiplier, agent
 //!   roster (cn + persona + λ + transient flag), and the latest stats
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
-use crate::WardenError;
+use crate::ClavenarError;
 use crate::http::{default_provider, decode_response, parse_base_url, HttpProvider, StaticHttpClient};
 
 /// One row in the live agent roster — mirrors the simulator's
@@ -87,14 +87,14 @@ impl SimClient {
     /// Build a client against `base_url` (e.g.
     /// `http://simulator:9100`). Returns `InvalidConfig` if the URL
     /// is malformed.
-    pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
         Ok(Self { base_url: url, http })
     }
 
     /// Inject a pre-configured `reqwest::Client`. Same use case as
-    /// `WardenClientBuilder::http_client` — lets callers configure
+    /// `ClavenarClientBuilder::http_client` — lets callers configure
     /// timeouts / proxy / TLS once and reuse.
     pub fn with_http_client(self, client: Client) -> Self {
         self.with_http_provider(Arc::new(StaticHttpClient::new(client)))
@@ -108,7 +108,7 @@ impl SimClient {
     }
 
     /// Read-only access to the configured base URL. Mirrors
-    /// `AgentsClient::base_url` so the warden-console `/config` page
+    /// `AgentsClient::base_url` so the clavenar-console `/config` page
     /// can surface the simulator's admin URL on its "Backends" card
     /// without having to plumb the raw env var alongside the client.
     pub fn base_url(&self) -> &Url {
@@ -116,14 +116,14 @@ impl SimClient {
     }
 
     /// `GET /status` — current multiplier + agent roster + stats.
-    pub async fn status(&self) -> Result<SimStatus, WardenError> {
+    pub async fn status(&self) -> Result<SimStatus, ClavenarError> {
         self.get_json("status").await
     }
 
     /// `POST /multiplier` — update the simulator's traffic multiplier
     /// in place. Returns the post-update [`SimStatus`] so the caller
     /// can render the new state without a follow-up `status()` call.
-    pub async fn set_multiplier(&self, multiplier: f64) -> Result<SimStatus, WardenError> {
+    pub async fn set_multiplier(&self, multiplier: f64) -> Result<SimStatus, ClavenarError> {
         self.post_json("multiplier", &serde_json::json!({ "traffic_multiplier": multiplier }))
             .await
     }
@@ -131,7 +131,7 @@ impl SimClient {
     /// `POST /running` — flip the simulator's start/stop flag.
     /// Returns the post-update [`SimStatus`] so the caller can render
     /// the new badge without a follow-up `status()` call.
-    pub async fn set_running(&self, running: bool) -> Result<SimStatus, WardenError> {
+    pub async fn set_running(&self, running: bool) -> Result<SimStatus, ClavenarError> {
         self.post_json("running", &serde_json::json!({ "running": running }))
             .await
     }
@@ -140,8 +140,8 @@ impl SimClient {
     /// auto-decision sidecar. Returns the post-update [`SimStatus`].
     /// When the simulator wasn't booted with `--hil-url`, the server
     /// answers 409 Conflict and this surfaces as
-    /// [`WardenError::Server`] with the explanation in the body.
-    pub async fn set_auto_decide(&self, enabled: bool) -> Result<SimStatus, WardenError> {
+    /// [`ClavenarError::Server`] with the explanation in the body.
+    pub async fn set_auto_decide(&self, enabled: bool) -> Result<SimStatus, ClavenarError> {
         self.post_json("auto-decide", &serde_json::json!({ "enabled": enabled }))
             .await
     }
@@ -153,7 +153,7 @@ impl SimClient {
         &self,
         persona: &str,
         count: usize,
-    ) -> Result<Vec<String>, WardenError> {
+    ) -> Result<Vec<String>, ClavenarError> {
         // The simulator returns `{ spawned: [...] }`; project to the
         // inner Vec so callers don't carry the wrapper.
         #[derive(Deserialize)]
@@ -169,11 +169,11 @@ impl SimClient {
     async fn get_json<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let endpoint = self
             .base_url
             .join(path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().get(endpoint).send().await?;
         let status = resp.status();
         let body = resp.text().await?;
@@ -184,11 +184,11 @@ impl SimClient {
         &self,
         path: &str,
         body: &B,
-    ) -> Result<T, WardenError> {
+    ) -> Result<T, ClavenarError> {
         let endpoint = self
             .base_url
             .join(path)
-            .map_err(|e| WardenError::InvalidConfig(format!("join {path}: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().post(endpoint).json(body).send().await?;
         let status = resp.status();
         let body = resp.text().await?;
@@ -268,7 +268,7 @@ mod tests {
 
     #[test]
     fn sim_client_surfaces_configured_base_url() {
-        // The warden-console /config page renders the simulator's base
+        // The clavenar-console /config page renders the simulator's base
         // URL on its "Backends (optional)" card; this getter is what
         // the handler reads. Round-trip the URL string through the
         // client without losing the trailing slash.

@@ -1,20 +1,20 @@
-# warden-sdk
+# clavenar-sdk
 
-Async Rust client for [Agent Warden](https://github.com/vanteguardlabs).
+Async Rust client for [Clavenar](https://github.com/clavenar).
 Wraps the proxy `POST /mcp` surface and the ledger audit/verify
 endpoints with typed verdicts so an external app doesn't have to
 relearn the wire contract on every integration.
 
 ```bash
-cargo add warden-sdk
+cargo add clavenar-sdk
 ```
 
-Pairs with [`warden-lite`](https://github.com/vanteguardlabs/warden-lite)
+Pairs with [`clavenar-lite`](https://github.com/clavenar/clavenar-lite)
 for the dev-onboarding story (lite is the OSS proxy you put in front
 of an agent, this SDK is what your app calls), and with the
-full Agent Warden control plane for production.
+full Clavenar control plane for production.
 
-Sequence diagrams for the five primary client paths — `WardenClient::call_tool`
+Sequence diagrams for the five primary client paths — `ClavenarClient::call_tool`
 with veto parse, `LedgerClient` audit + verify, `AgentsClient`
 lifecycle, `PoliciesClient` update with optimistic concurrency, and
 Lab + Miner with typed-error lift — live in
@@ -24,36 +24,36 @@ Lab + Miner with typed-error lift — live in
 
 | Type                    | Wraps                                      | Returns                                                                  |
 |-------------------------|--------------------------------------------|--------------------------------------------------------------------------|
-| `WardenClient`          | `POST /mcp` on warden-lite or warden-proxy | upstream JSON on 200, `WardenError::Veto` on 403                         |
-| `LedgerClient`          | warden-ledger HTTP API                     | typed `LedgerEntry`, `LifecycleRow`, `VerifyResult`, `ExportRecord`, regulatory bundle bytes |
-| `AgentsClient`          | warden-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
-| `PoliciesClient`        | warden-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
-| `SimClient`             | warden-simulator admin HTTP                | typed `SimStatus`, `SimAgentRecord`, `SimStats` (dev-only — no auth)     |
-| `WardenError::Veto`     | structured 403 body (or plain-text fallback) | `intent_category`, `reasons`, `review_reasons`, `raw`                    |
-| `Auth`                  | `WardenClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
+| `ClavenarClient`          | `POST /mcp` on clavenar-lite or clavenar-proxy | upstream JSON on 200, `ClavenarError::Veto` on 403                         |
+| `LedgerClient`          | clavenar-ledger HTTP API                     | typed `LedgerEntry`, `LifecycleRow`, `VerifyResult`, `ExportRecord`, regulatory bundle bytes |
+| `AgentsClient`          | clavenar-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
+| `PoliciesClient`        | clavenar-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
+| `SimClient`             | clavenar-simulator admin HTTP                | typed `SimStatus`, `SimAgentRecord`, `SimStats` (dev-only — no auth)     |
+| `ClavenarError::Veto`     | structured 403 body (or plain-text fallback) | `intent_category`, `reasons`, `review_reasons`, `raw`                    |
+| `Auth`                  | `ClavenarClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
 
 A path prefix on the base URL is preserved across every client — pass
-`http://gateway/warden` and requests land at `http://gateway/warden/mcp`
+`http://gateway/clavenar` and requests land at `http://gateway/clavenar/mcp`
 etc. Trailing slash optional; the SDK normalizes either form.
 
 ## Quick start
 
 ```rust
 use serde_json::json;
-use warden_sdk::{Auth, WardenClient, WardenError};
+use clavenar_sdk::{Auth, ClavenarClient, ClavenarError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = WardenClient::builder("http://localhost:8088")?
+    let client = ClavenarClient::builder("http://localhost:8088")?
         .auth(Auth::Bearer("dev-token".into()))
         .build()?;
 
     match client.call_tool("search", json!({"q": "rust async"})).await {
         Ok(reply) => println!("upstream said: {reply}"),
-        Err(WardenError::Veto { intent_category, reasons, .. }) => {
+        Err(ClavenarError::Veto { intent_category, reasons, .. }) => {
             eprintln!("blocked ({intent_category}): {reasons:?}");
         }
-        Err(WardenError::Unauthorized(body)) => {
+        Err(ClavenarError::Unauthorized(body)) => {
             eprintln!("auth failed: {body}");
         }
         Err(other) => return Err(other.into()),
@@ -69,7 +69,7 @@ The full edition writes two ledger rows per successful request (proxy
 exposes the same join:
 
 ```rust
-use warden_sdk::LedgerClient;
+use clavenar_sdk::LedgerClient;
 
 let ledger = LedgerClient::new("http://localhost:8083")?;
 let rows = ledger
@@ -101,11 +101,11 @@ assert!(v.valid, "chain corrupted at seq {:?}", v.first_invalid_seq);
 
 ## Agents, policies, simulator
 
-The same crate ships typed clients for the rest of the warden control
+The same crate ships typed clients for the rest of the clavenar control
 plane so an integrator doesn't have to roll a fresh client per service:
 
 ```rust
-use warden_sdk::{AgentsClient, AgentListFilter, AgentState, CreateAgentRequest};
+use clavenar_sdk::{AgentsClient, AgentListFilter, AgentState, CreateAgentRequest};
 
 let agents = AgentsClient::new("http://identity:8086")?
     .with_bearer(oidc_id_token);
@@ -127,7 +127,7 @@ let created = agents.create(&CreateAgentRequest {
 agents.suspend(&created.record.id, "acme", Some("incident #4172")).await?;
 ```
 
-`PoliciesClient` wraps `warden-policy-engine`'s
+`PoliciesClient` wraps `clavenar-policy-engine`'s
 console-policy-management surface (list / get / create / update /
 activate / deactivate / delete / rollback / diff). 409s on mutations
 carry a typed `ConflictResponse` — recover the up-to-date row via
@@ -140,11 +140,11 @@ network, never exposed to the public.
 
 ## Error model
 
-`WardenError` distinguishes the four wire outcomes a caller actually
+`ClavenarError` distinguishes the four wire outcomes a caller actually
 has to branch on, plus transport / decode / config arms:
 
 ```rust
-pub enum WardenError {
+pub enum ClavenarError {
     Veto { intent_category: String, reasons: Vec<String>,
            review_reasons: Vec<String>, raw: String },
     Unauthorized(String),
@@ -161,33 +161,33 @@ minor — match arms must include `_ => ...`.
 
 ### Two 403 shapes, one error variant
 
-- **warden-lite** emits a structured JSON 403 (`error`, `reasons`,
+- **clavenar-lite** emits a structured JSON 403 (`error`, `reasons`,
   `review_reasons`, `intent_category`). The SDK parses it into the
   `Veto` arm's named fields.
-- **full-edition warden-proxy** today emits a plain-text 403
+- **full-edition clavenar-proxy** today emits a plain-text 403
   (`Security Violation: <reason>`). The SDK still surfaces this as
   `Veto`, but the structured fields are empty defaults — only `raw`
   carries the body.
 
 Either way you don't special-case the proxy edition: branch on
-`WardenError::Veto`, read `intent_category` if you need it (skip
+`ClavenarError::Veto`, read `intent_category` if you need it (skip
 otherwise), and always log `raw`.
 
 ## Wire shapes the SDK mirrors
 
 | SDK type               | Server-side source                                   |
 |------------------------|------------------------------------------------------|
-| `LedgerEntry`          | `warden_ledger::LedgerEntry`                         |
-| `LifecycleRow`         | `warden_ledger::LifecycleRow` (chain v3 + payload)   |
-| `VerifyResult`         | `warden_ledger::VerifyResult`                        |
-| `ExportRecord`         | `warden_ledger::export::ExportRecord`                |
-| `AgentRecord`          | `warden_identity::agents::AgentRecord`               |
-| `AgentCreated`         | `warden_identity::agents::CreateAgentResponse`       |
-| `PolicyRow` / `PolicyVersionRow`             | `warden_policy_engine::storage::*`         |
-| `PolicyDetail`                               | `warden_policy_engine::read_api::PolicyDetailResponse` |
-| `MutationResponse`                           | `warden_policy_engine::write_api::MutationResponse`    |
-| `SimStatus` / `SimStats` / `SimAgentRecord`  | `warden_simulator::admin::{StatusResponse, StatsView, AgentRecord}` |
-| `WardenError::Veto`    | `warden_lite::proxy::DenyResponse` (JSON 403)        |
+| `LedgerEntry`          | `clavenar_ledger::LedgerEntry`                         |
+| `LifecycleRow`         | `clavenar_ledger::LifecycleRow` (chain v3 + payload)   |
+| `VerifyResult`         | `clavenar_ledger::VerifyResult`                        |
+| `ExportRecord`         | `clavenar_ledger::export::ExportRecord`                |
+| `AgentRecord`          | `clavenar_identity::agents::AgentRecord`               |
+| `AgentCreated`         | `clavenar_identity::agents::CreateAgentResponse`       |
+| `PolicyRow` / `PolicyVersionRow`             | `clavenar_policy_engine::storage::*`         |
+| `PolicyDetail`                               | `clavenar_policy_engine::read_api::PolicyDetailResponse` |
+| `MutationResponse`                           | `clavenar_policy_engine::write_api::MutationResponse`    |
+| `SimStatus` / `SimStats` / `SimAgentRecord`  | `clavenar_simulator::admin::{StatusResponse, StatsView, AgentRecord}` |
+| `ClavenarError::Veto`    | `clavenar_lite::proxy::DenyResponse` (JSON 403)        |
 | Request body shape     | JSON-RPC 2.0; `tools/call` with `params.{name,arguments}` |
 
 The `correlation_id` field on `LedgerEntry` is `#[serde(default)]`,
@@ -203,7 +203,7 @@ your own `reqwest::Client`:
 let http = reqwest::Client::builder()
     .timeout(std::time::Duration::from_secs(2))
     .build()?;
-let client = WardenClient::builder("http://localhost:8088")?
+let client = ClavenarClient::builder("http://localhost:8088")?
     .http_client(http)
     .build()?;
 ```
@@ -215,9 +215,9 @@ let client = WardenClient::builder("http://localhost:8088")?
   callers a `reqwest::ClientBuilder` and letting them attach an `Identity`.
 - `Auth::Oidc(TokenSource)` and `Auth::Spiffe(WorkloadApi)` — paired with
   short-lived bearer tokens and SPIFFE workload identities respectively.
-  Per the GTM plan these are the "Warden-Ready" identity story.
+  Per the GTM plan these are the "Clavenar-Ready" identity story.
 - TS / Python bindings — out of scope for the Rust crate. Likely
-  separate `@warden/sdk` and `warden-sdk` (PyPI) packages built on top
+  separate `@clavenar/sdk` and `clavenar-sdk` (PyPI) packages built on top
   of the same wire contract once it's stable.
 
 ## License

@@ -1,4 +1,4 @@
-//! Typed client for `warden-brain`.
+//! Typed client for `clavenar-brain`.
 //!
 //! Currently exposes a single endpoint: `POST /explain-pattern`,
 //! consumed by the policy-engine miner (Phase 7 Self-Learn) and by
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::http::{decode_response, default_provider, parse_base_url, HttpProvider, StaticHttpClient};
-use crate::WardenError;
+use crate::ClavenarError;
 
 /// Wire shape for `POST /explain-pattern`. The PII contract here is
 /// enforced by the struct itself: only aggregated thresholds, the
@@ -52,7 +52,7 @@ impl BrainClient {
     /// Build a client against `base_url` (e.g.
     /// `http://localhost:8081`). The path is appended verbatim — pass
     /// the brain's root, not `/explain-pattern`.
-    pub fn new(base_url: impl AsRef<str>) -> Result<Self, WardenError> {
+    pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
         Ok(Self {
@@ -83,11 +83,11 @@ impl BrainClient {
     pub async fn explain_pattern(
         &self,
         req: &ExplainPatternRequest,
-    ) -> Result<ExplainPatternResponse, WardenError> {
+    ) -> Result<ExplainPatternResponse, ClavenarError> {
         let url = self
             .base_url
             .join("explain-pattern")
-            .map_err(|e| WardenError::InvalidConfig(format!("join explain-pattern: {e}")))?;
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join explain-pattern: {e}")))?;
         let mut request = self.http.client().post(url).json(req);
         if let Some(t) = self.bearer.as_ref() {
             request = request.bearer_auth(t);
@@ -107,14 +107,14 @@ mod tests {
     fn rejects_malformed_base_url() {
         match BrainClient::new("not a url") {
             Ok(_) => panic!("expected InvalidConfig"),
-            Err(WardenError::InvalidConfig(_)) => {}
+            Err(ClavenarError::InvalidConfig(_)) => {}
             Err(other) => panic!("unexpected error: {other}"),
         }
     }
 
     #[test]
     fn pii_contract_request_shape_holds_only_aggregates() {
-        // Mirror of the test in warden-brain. The SDK type's shape is
+        // Mirror of the test in clavenar-brain. The SDK type's shape is
         // a separate enforcement boundary — a future PR that adds a
         // free-form payload field to ExplainPatternRequest has to
         // delete this assertion to land.
