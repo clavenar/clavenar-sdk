@@ -10,10 +10,11 @@
 //!
 //! * [`ClavenarClient`] — wraps the proxy's `POST /mcp` surface. Returns
 //!   either the upstream JSON-RPC response or a typed
-//!   [`ClavenarError::Veto`] parsed from the structured 403 body that
-//!   `clavenar-lite` emits. The full-edition `clavenar-proxy` returns a
-//!   plain-text 403 today; the verbatim body is preserved on the
-//!   `Veto.raw` field so callers don't lose information either way.
+//!   [`ClavenarError::Veto`] parsed from the structured 403 envelope
+//!   that both `clavenar-lite` and full-edition `clavenar-proxy` emit
+//!   (`layer`, `reasons`, `intent_category`, `correlation_id`, …). The
+//!   verbatim body is preserved on `Veto.raw`, and an older server that
+//!   returns a non-JSON 403 still surfaces as a `Veto` (raw only).
 //!
 //! * [`LedgerClient`] — wraps the ledger's `/audit/correlation/{id}`,
 //!   `/audit/{agent_id}`, and `/verify` endpoints with typed mirrors of

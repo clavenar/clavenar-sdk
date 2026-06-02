@@ -29,7 +29,7 @@ Lab + Miner with typed-error lift — live in
 | `AgentsClient`          | clavenar-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
 | `PoliciesClient`        | clavenar-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
 | `SimClient`             | clavenar-simulator admin HTTP                | typed `SimStatus`, `SimAgentRecord`, `SimStats` (dev-only — no auth)     |
-| `ClavenarError::Veto`     | structured 403 body (or plain-text fallback) | `intent_category`, `reasons`, `review_reasons`, `raw`                    |
+| `ClavenarError::Veto`     | structured 403 envelope (or non-JSON fallback) | `intent_category`, `reasons`, `review_reasons`, `correlation_id`, `raw` (`layer` etc. via `raw`) |
 | `Auth`                  | `ClavenarClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
 
 A path prefix on the base URL is preserved across every client — pass
@@ -159,19 +159,20 @@ pub enum ClavenarError {
 `#[non_exhaustive]` reserves the right to add variants in a future
 minor — match arms must include `_ => ...`.
 
-### Two 403 shapes, one error variant
+### One 403 envelope, one error variant
 
-- **clavenar-lite** emits a structured JSON 403 (`error`, `reasons`,
-  `review_reasons`, `intent_category`). The SDK parses it into the
-  `Veto` arm's named fields.
-- **full-edition clavenar-proxy** today emits a plain-text 403
-  (`Security Violation: <reason>`). The SDK still surfaces this as
-  `Veto`, but the structured fields are empty defaults — only `raw`
-  carries the body.
+Both **clavenar-lite** and full-edition **clavenar-proxy** emit the same
+structured JSON 403 envelope (`verdict`, `layer`, `error`, `reasons`,
+`review_reasons`, `intent_category`, `correlation_id`). The SDK projects
+the commonly-needed fields onto the `Veto` arm — including
+`correlation_id` (the join key for the audit row); the full envelope
+(e.g. `layer`, the deny stage) is always available verbatim on `raw`.
 
-Either way you don't special-case the proxy edition: branch on
-`ClavenarError::Veto`, read `intent_category` if you need it (skip
-otherwise), and always log `raw`.
+An older server that returns a non-JSON 403 still surfaces as `Veto`,
+but the structured fields are empty/`None` and only `raw` carries the
+body. Either way you don't special-case the server edition: branch on
+`ClavenarError::Veto`, read `correlation_id` / `reasons` if you need
+them, and always log `raw`.
 
 ## Wire shapes the SDK mirrors
 

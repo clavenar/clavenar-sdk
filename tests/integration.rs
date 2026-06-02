@@ -94,10 +94,13 @@ async fn call_tool_structured_veto_parses_fields() {
             (
                 StatusCode::FORBIDDEN,
                 Json(json!({
+                    "verdict": "denied",
+                    "layer": "policy",
                     "error": "security_violation",
                     "reasons": ["Direct execution of SQL queries is prohibited."],
                     "review_reasons": [],
                     "intent_category": "DangerousTool",
+                    "correlation_id": "a1b2c3d4-0000-4000-8000-000000000099",
                 })),
             )
                 .into_response()
@@ -111,11 +114,15 @@ async fn call_tool_structured_veto_parses_fields() {
         .await
         .expect_err("expected veto");
     match err {
-        ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
+        ClavenarError::Veto { intent_category, reasons, review_reasons, correlation_id, raw } => {
             assert_eq!(intent_category, "DangerousTool");
             assert_eq!(reasons.len(), 1);
             assert!(reasons[0].contains("SQL"));
             assert!(review_reasons.is_empty());
+            assert_eq!(
+                correlation_id.as_deref(),
+                Some("a1b2c3d4-0000-4000-8000-000000000099")
+            );
             assert!(raw.contains("security_violation"));
         }
         other => panic!("expected Veto, got {other:?}"),
@@ -144,11 +151,12 @@ async fn call_tool_plain_text_veto_keeps_body_in_raw() {
         .await
         .expect_err("expected veto");
     match err {
-        ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
+        ClavenarError::Veto { intent_category, reasons, review_reasons, correlation_id, raw } => {
             // No structured fields, but the raw body is preserved.
             assert!(intent_category.is_empty());
             assert!(reasons.is_empty());
             assert!(review_reasons.is_empty());
+            assert!(correlation_id.is_none());
             assert!(raw.starts_with("Security Violation"));
         }
         other => panic!("expected Veto, got {other:?}"),
