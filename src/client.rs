@@ -183,9 +183,9 @@ impl ClavenarClientBuilder {
     }
 }
 
-/// Mirror of clavenar-lite's `DenyResponse`. Used only inside
-/// `parse_veto`; we project into [`ClavenarError::Veto`] before handing
-/// the value back to the caller.
+/// Mirror of the shared 403 envelope emitted by both `clavenar-lite`
+/// and full-edition `clavenar-proxy`. Used only inside `parse_veto`; we
+/// project into [`ClavenarError::Veto`] before handing the value back.
 #[derive(Debug, Deserialize)]
 struct DenyResponse {
     #[serde(default)]
@@ -194,25 +194,29 @@ struct DenyResponse {
     review_reasons: Vec<String>,
     #[serde(default)]
     intent_category: String,
+    #[serde(default)]
+    correlation_id: Option<String>,
 }
 
-/// Parse a 403 body into a `ClavenarError::Veto`. If the body is JSON
-/// matching `DenyResponse`, populate the structured fields; if not
-/// (full-edition `clavenar-proxy` returns plain text), only `raw` is
-/// set. Either way we return `ClavenarError::Veto`, never `Decode` —
-/// callers shouldn't have to special-case the proxy edition.
+/// Parse a 403 body into a `ClavenarError::Veto`. Both editions now emit
+/// the JSON envelope, so the structured fields populate; an older server
+/// that returns plain text falls back to `raw` only. Either way we
+/// return `ClavenarError::Veto`, never `Decode` — callers shouldn't have
+/// to special-case the server edition.
 fn parse_veto(raw: &str) -> ClavenarError {
     match serde_json::from_str::<DenyResponse>(raw) {
         Ok(d) => ClavenarError::Veto {
             intent_category: d.intent_category,
             reasons: d.reasons,
             review_reasons: d.review_reasons,
+            correlation_id: d.correlation_id,
             raw: raw.to_owned(),
         },
         Err(_) => ClavenarError::Veto {
             intent_category: String::new(),
             reasons: Vec::new(),
             review_reasons: Vec::new(),
+            correlation_id: None,
             raw: raw.to_owned(),
         },
     }
@@ -232,16 +236,29 @@ mod tests {
     #[test]
     fn parse_veto_with_structured_body() {
         let body = r#"{
+            "verdict": "denied",
+            "layer": "policy",
             "error": "security_violation",
             "reasons": ["Direct execution of SQL queries is prohibited."],
             "review_reasons": [],
-            "intent_category": "DangerousTool"
+            "intent_category": "DangerousTool",
+            "correlation_id": "a1b2c3d4-0000-4000-8000-000000000001"
         }"#;
         match parse_veto(body) {
-            ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
+            ClavenarError::Veto {
+                intent_category,
+                reasons,
+                review_reasons,
+                correlation_id,
+                raw,
+            } => {
                 assert_eq!(intent_category, "DangerousTool");
                 assert_eq!(reasons.len(), 1);
                 assert!(review_reasons.is_empty());
+                assert_eq!(
+                    correlation_id.as_deref(),
+                    Some("a1b2c3d4-0000-4000-8000-000000000001")
+                );
                 assert_eq!(raw, body);
             }
             other => panic!("expected Veto, got {other:?}"),
@@ -250,14 +267,21 @@ mod tests {
 
     #[test]
     fn parse_veto_with_plain_text_body() {
-        // Mirrors what full-edition clavenar-proxy returns today.
+        // Mirrors what an older / non-JSON server returns.
         let body = "Security Violation: shell_exec is denied for this agent";
         match parse_veto(body) {
-            ClavenarError::Veto { intent_category, reasons, review_reasons, raw } => {
+            ClavenarError::Veto {
+                intent_category,
+                reasons,
+                review_reasons,
+                correlation_id,
+                raw,
+            } => {
                 // Structured fields stay empty; raw carries the full body.
                 assert!(intent_category.is_empty());
                 assert!(reasons.is_empty());
                 assert!(review_reasons.is_empty());
+                assert!(correlation_id.is_none());
                 assert_eq!(raw, body);
             }
             other => panic!("expected Veto, got {other:?}"),

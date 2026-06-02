@@ -13,11 +13,12 @@ use thiserror::Error;
 /// Match arms a caller will typically care about:
 ///
 /// * [`ClavenarError::Veto`] — the security pipeline rejected the
-///   request. The four fields mirror `clavenar-lite`'s structured 403
-///   body (`{ error, reasons, review_reasons, intent_category }`).
-///   `raw` is the full body verbatim — set on every veto, the *only*
-///   populated field when the server is full-edition `clavenar-proxy`,
-///   which today returns a plain-text 403.
+///   request. The structured fields mirror the shared 403 envelope
+///   (`{ layer, error, reasons, review_reasons, intent_category,
+///   correlation_id }`) emitted by both `clavenar-lite` and
+///   full-edition `clavenar-proxy`. `raw` is the full body verbatim —
+///   set on every veto, and the *only* populated field when an older
+///   server returns a non-JSON 403.
 /// * [`ClavenarError::Unauthorized`] — bearer token missing or wrong
 ///   (HTTP 401). Carries the server's body string for diagnostics.
 /// * [`ClavenarError::BadRequest`] — the request didn't parse as
@@ -34,21 +35,26 @@ use thiserror::Error;
 pub enum ClavenarError {
     /// Security pipeline rejected the request (HTTP 403).
     ///
-    /// Populated from the structured 403 body emitted by
-    /// `clavenar-lite`'s `DenyResponse`:
+    /// Populated from the structured 403 body emitted by both
+    /// `clavenar-lite` and full-edition `clavenar-proxy`:
     /// ```json
-    /// { "error": "security_violation",
+    /// { "verdict": "denied", "layer": "policy",
+    ///   "error": "security_violation",
     ///   "reasons": [...], "review_reasons": [...],
-    ///   "intent_category": "..." }
+    ///   "intent_category": "...", "correlation_id": "..." }
     /// ```
-    /// When the server is full-edition `clavenar-proxy` (which returns
-    /// plain text), only `raw` is meaningful and the structured fields
-    /// are empty defaults.
+    /// `correlation_id` is the join key for pulling the matching ledger
+    /// row; it is `None` when an older server emits a non-JSON 403 — in
+    /// that case only `raw` is meaningful. The deny `layer` and machine
+    /// `error` code are also in the envelope; read them off `raw` when
+    /// needed (kept out of the typed fields to bound the error size).
     #[error("clavenar veto ({intent_category}): {raw}")]
     Veto {
         intent_category: String,
         reasons: Vec<String>,
         review_reasons: Vec<String>,
+        /// Proxy-stamped join key for the audit row, when present.
+        correlation_id: Option<String>,
         /// Full 403 body verbatim. Always set so callers don't lose
         /// information when the server emits a non-JSON 403.
         raw: String,
