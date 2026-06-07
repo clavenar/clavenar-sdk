@@ -44,6 +44,11 @@ pub struct PolicyRow {
     pub name: String,
     pub content_type: String,
     pub active: bool,
+    /// `true` for the baseline floor — always-active, refuses
+    /// deactivate / delete. `#[serde(default)]` so older engine
+    /// payloads (pre-protected) still deserialize as unprotected.
+    #[serde(default)]
+    pub protected: bool,
     pub current_version: i64,
     pub deleted_at: Option<String>,
     pub created_at: String,
@@ -150,6 +155,27 @@ pub struct RollbackRequest<'a> {
     pub reason: &'a str,
     pub actor_sub: &'a str,
     pub actor_idp: &'a str,
+}
+
+/// Body for the category sweeps
+/// (`POST /policies/categories/{domain}/{activate,deactivate}`). No
+/// `expected_current_version` — a category sweep can't pin a per-row
+/// concurrency token.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchStateChangeRequest<'a> {
+    pub reason: &'a str,
+    pub actor_sub: &'a str,
+    pub actor_idp: &'a str,
+}
+
+/// Response from a category sweep: how many rows flipped (`changed`,
+/// one `MutationResponse` each in `results`) vs were left as-is
+/// (`skipped` — already in target state or protected).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchMutationResponse {
+    pub changed: usize,
+    pub skipped: usize,
+    pub results: Vec<MutationResponse>,
 }
 
 // ── Response wrappers (read endpoints) ────────────────────────────────
@@ -570,6 +596,34 @@ impl PoliciesClient {
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
+    /// `POST /policies/categories/{domain}/activate` — install every
+    /// policy in a category in one transaction + one engine rebuild.
+    pub async fn activate_category(
+        &self,
+        domain: &str,
+        req: &BatchStateChangeRequest<'_>,
+    ) -> Result<BatchMutationResponse, ClavenarError> {
+        let url = self.join(&format!(
+            "policies/categories/{}/activate",
+            percent_encode(domain)
+        ))?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
+    /// `POST /policies/categories/{domain}/deactivate` — uninstall a
+    /// whole category (protected floor rows are skipped, never flipped).
+    pub async fn deactivate_category(
+        &self,
+        domain: &str,
+        req: &BatchStateChangeRequest<'_>,
+    ) -> Result<BatchMutationResponse, ClavenarError> {
+        let url = self.join(&format!(
+            "policies/categories/{}/deactivate",
+            percent_encode(domain)
+        ))?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
     /// `DELETE /policies/{name}` — soft delete. Body is a
     /// [`StateChangeRequest`] (reason + expected_current_version).
     pub async fn delete(
@@ -922,5 +976,58 @@ mod tests {
         assert!(row.domain.is_none());
         assert!(row.frameworks.is_empty());
         assert!(row.tool_surface.is_empty());
+        // Pre-protected payload defaults to unprotected.
+        assert!(!row.protected);
+    }
+
+    #[test]
+    fn policy_row_decodes_protected_flag() {
+        let body = serde_json::json!({
+            "name": "governance.rego",
+            "content_type": "rego",
+            "active": true,
+            "protected": true,
+            "current_version": 1,
+            "deleted_at": null,
+            "created_at": "2026-06-07T00:00:00Z",
+            "updated_at": "2026-06-07T00:00:00Z"
+        })
+        .to_string();
+        let row: PolicyRow = serde_json::from_str(&body).unwrap();
+        assert!(row.protected);
+    }
+
+    #[test]
+    fn batch_state_change_request_serializes() {
+        let req = BatchStateChangeRequest {
+            reason: "install finance",
+            actor_sub: "alice",
+            actor_idp: "oidc:test",
+        };
+        let v = serde_json::to_value(&req).unwrap();
+        assert_eq!(v["reason"], "install finance");
+        assert_eq!(v["actor_sub"], "alice");
+        // No expected_current_version on the batch shape.
+        assert!(v.get("expected_current_version").is_none());
+    }
+
+    #[test]
+    fn batch_mutation_response_decodes() {
+        let body = serde_json::json!({
+            "changed": 2,
+            "skipped": 1,
+            "results": [
+                {"name": "a.rego", "version": 2, "body_sha256": "x",
+                 "current_version": 2, "active": true, "event_kind": "policy.activated"},
+                {"name": "b.rego", "version": 3, "body_sha256": "y",
+                 "current_version": 3, "active": true, "event_kind": "policy.activated"}
+            ]
+        })
+        .to_string();
+        let resp: BatchMutationResponse = serde_json::from_str(&body).unwrap();
+        assert_eq!(resp.changed, 2);
+        assert_eq!(resp.skipped, 1);
+        assert_eq!(resp.results.len(), 2);
+        assert_eq!(resp.results[0].name, "a.rego");
     }
 }
