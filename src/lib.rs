@@ -50,6 +50,7 @@ mod client;
 mod error;
 mod http;
 mod ledger;
+mod pack;
 mod policies;
 mod sim;
 
@@ -77,5 +78,10 @@ pub use policies::{
     PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson, PolicyRow, PolicyTemplate,
     PolicyTemplateDetail, PolicyVersionRow, RollbackRequest, StateChangeRequest,
     UpdatePolicyRequest, VersionsListResponse,
+};
+pub use pack::{
+    verify_pack, verifying_key_from_jwks, verifying_key_from_pem, PackEntry, PackManifest,
+    PackSignature, PackSignatureRef, PackSigner, PackVerifyOutcome, VerifyingKey, PACK_AUDIENCE,
+    PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};
