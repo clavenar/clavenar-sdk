@@ -71,8 +71,9 @@ pub use brain::{
     BrainClient, ExplainPatternRequest, ExplainPatternResponse,
 };
 pub use policies::{
-    parse_batch_error, parse_mine_error, BatchMode, BatchVerdict, BatchVerdictResult, CompileError,
-    ConflictResponse, CreatePolicyRequest, DiffClass, DiffResponse, EvaluateBatchError,
+    parse_batch_error, parse_mine_error, BatchMode, BatchMutationResponse, BatchStateChangeRequest,
+    BatchVerdict, BatchVerdictResult, CompileError, ConflictResponse, CreatePolicyRequest,
+    DiffClass, DiffResponse, EvaluateBatchError,
     EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest, LabTemplateRequest,
     MineCandidate, MineError, MineLabReplay, MineRequest, MineResponse, MutationResponse,
     PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson, PolicyRow, PolicyTemplate,
