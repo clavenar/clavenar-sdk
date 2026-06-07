@@ -27,6 +27,13 @@ thiserror = "1"
 # console's /config page renders `configured (sha256: ab12cd34)` as a
 # non-invertible presence indicator for the operator OIDC token.
 sha2 = "0.10"
+hex = "0.4"
+# Ed25519 verify for signed policy packs (Policy Exchange). `pem`
+# enables SPKI-PEM public-key parsing; JWKS keys are decoded from their
+# base64url `x` coordinate. Same algorithm as the regulatory-export
+# manifest signature — reused primitive, not new crypto.
+ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
+base64 = "0.22"
 
 [dev-dependencies]
 # axum 0.8 (not 0.7) — the `{param}` capture syntax in test routes is
