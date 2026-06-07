@@ -243,6 +243,64 @@ pub struct RegulatoryExportOptions {
     /// still serialize as an empty array on the wire so an auditor
     /// can distinguish "no overlap" from "didn't ask."
     pub include_exports: bool,
+    /// When `true`, the ledger embeds an auto-derived EU AI Act Article
+    /// 14/15 + SOC 2 / ISO 27001 `compliance_register.json` (manifest
+    /// schema v4) and widens `article_scope` to cover Articles 14 + 15.
+    /// Defaults to `false` — a plain Article 11/12 bundle.
+    pub include_compliance: bool,
+}
+
+/// Whether a control's evidence is fully present, partial, or absent for
+/// the window. Mirror of the ledger's `compliance::EvidenceStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceStatus {
+    Satisfied,
+    Partial,
+    NoData,
+}
+
+/// One control's derived evidence. `framework` is the auditor-facing
+/// display string ("EU AI Act", "SOC 2", "ISO/IEC 27001"); `metric` is
+/// an opaque control-specific JSON object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlEvidence {
+    pub control_id: String,
+    pub framework: String,
+    pub title: String,
+    pub status: EvidenceStatus,
+    pub metric: serde_json::Value,
+    pub sample_seqs: Vec<i64>,
+    pub narrative: String,
+}
+
+/// Chain-integrity summary embedded in the register.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChainVerifySummary {
+    pub valid: bool,
+    pub entries_checked: usize,
+    pub first_invalid_seq: Option<i64>,
+}
+
+/// Half-open `[from, to)` window the register covers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterWindow {
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+}
+
+/// Live compliance evidence register. Mirror of the ledger's
+/// `compliance::ComplianceRegister` (see
+/// `clavenar-ledger/src/compliance.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComplianceRegister {
+    pub schema_version: String,
+    pub generated_at: DateTime<Utc>,
+    pub window: RegisterWindow,
+    pub row_count: usize,
+    pub chain_verify: ChainVerifySummary,
+    pub controls: Vec<ControlEvidence>,
+    pub disclaimer: String,
 }
 
 /// Async client for the ledger HTTP surface.
@@ -590,6 +648,9 @@ impl LedgerClient {
         if opts.include_exports {
             path.push_str("&include_exports=true");
         }
+        if opts.include_compliance {
+            path.push_str("&include_compliance=true");
+        }
         let endpoint = self
             .base_url
             .join(&path)
@@ -613,6 +674,42 @@ impl LedgerClient {
         }
         let bytes = resp.bytes().await?;
         Ok(bytes.to_vec())
+    }
+
+    /// `POST /compliance/evidence?from=…&to=…` — live EU AI Act Article
+    /// 14/15 + SOC 2 / ISO 27001 evidence register for the half-open
+    /// window `[from, to)`. Returns the parsed [`ComplianceRegister`].
+    /// The downloadable, signed counterpart rides
+    /// [`Self::regulatory_export`] with
+    /// [`RegulatoryExportOptions::include_compliance`].
+    ///
+    /// An empty window returns `200` with every control `no_data`; an
+    /// inverted or malformed window maps to `400`
+    /// (`ClavenarError::Server`).
+    pub async fn compliance_evidence(
+        &self,
+        from: &chrono::DateTime<chrono::Utc>,
+        to: &chrono::DateTime<chrono::Utc>,
+    ) -> Result<ComplianceRegister, ClavenarError> {
+        let from_str = from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let to_str = to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let path = format!(
+            "compliance/evidence?from={}&to={}",
+            percent_encode(&from_str),
+            percent_encode(&to_str),
+        );
+        let endpoint = self
+            .base_url
+            .join(&path)
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
+        let resp = self.http.client().post(endpoint).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+        if status == StatusCode::OK {
+            serde_json::from_str(&raw).map_err(ClavenarError::Decode)
+        } else {
+            Err(ClavenarError::Server { status, body: raw })
+        }
     }
 
     /// Internal: GET `<base_url>/<path>` and decode JSON. Returns
@@ -924,6 +1021,7 @@ mod tests {
             from: String,
             to: String,
             include_exports: Option<String>,
+            include_compliance: Option<String>,
             content_type: Option<String>,
             body_len: usize,
         }
@@ -942,6 +1040,7 @@ mod tests {
                         c.from = q.get("from").cloned().unwrap_or_default();
                         c.to = q.get("to").cloned().unwrap_or_default();
                         c.include_exports = q.get("include_exports").cloned();
+                        c.include_compliance = q.get("include_compliance").cloned();
                         c.content_type = headers
                             .get("content-type")
                             .and_then(|v| v.to_str().ok())
@@ -998,6 +1097,7 @@ mod tests {
                 RegulatoryExportOptions {
                     readme: Some(prose.to_vec()),
                     include_exports: true,
+                    include_compliance: false,
                 },
             )
             .await
@@ -1005,8 +1105,26 @@ mod tests {
         {
             let c = captured.lock().unwrap();
             assert_eq!(c.include_exports.as_deref(), Some("true"));
+            assert!(c.include_compliance.is_none());
             assert_eq!(c.content_type.as_deref(), Some("text/markdown"));
             assert_eq!(c.body_len, prose.len());
+        }
+
+        // Path C: include_compliance flips the query flag.
+        let _ = client
+            .regulatory_export(
+                &from,
+                &to,
+                RegulatoryExportOptions {
+                    include_compliance: true,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        {
+            let c = captured.lock().unwrap();
+            assert_eq!(c.include_compliance.as_deref(), Some("true"));
         }
 
         let _ = kill_tx.send(());
@@ -1051,6 +1169,60 @@ mod tests {
             }
             other => panic!("expected ClavenarError::Server, got {other:?}"),
         }
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn compliance_evidence_parses_register() {
+        use axum::http::StatusCode;
+        use axum::{routing::post, Json, Router};
+        use tokio::sync::oneshot;
+
+        let app = Router::new().route(
+            "/compliance/evidence",
+            post(|| async {
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({
+                        "schema_version": "1",
+                        "generated_at": "2026-01-01T00:00:00Z",
+                        "window": { "from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z" },
+                        "row_count": 2,
+                        "chain_verify": { "valid": true, "entries_checked": 2, "first_invalid_seq": null },
+                        "controls": [{
+                            "control_id": "EU-AI-Act-Article-15",
+                            "framework": "EU AI Act",
+                            "title": "Accuracy, robustness and cybersecurity",
+                            "status": "satisfied",
+                            "metric": { "total_requests": 2 },
+                            "sample_seqs": [1, 2],
+                            "narrative": "ok"
+                        }],
+                        "disclaimer": "projection of logged facts"
+                    })),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
+        let register = client.compliance_evidence(&from, &to).await.unwrap();
+        assert_eq!(register.schema_version, "1");
+        assert_eq!(register.controls.len(), 1);
+        assert_eq!(register.controls[0].status, EvidenceStatus::Satisfied);
+        assert_eq!(register.controls[0].metric["total_requests"], 2);
         let _ = kill_tx.send(());
     }
 }

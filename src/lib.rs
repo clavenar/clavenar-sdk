@@ -62,7 +62,8 @@ pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
-    CorpusEntry, ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegulatoryExportOptions,
+    ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry, EvidenceStatus,
+    ExportRecord, LedgerClient, LedgerEntry, LifecycleRow, RegisterWindow, RegulatoryExportOptions,
     ReplayCorpus, ReplayCorpusParams, VerifyResult,
 };
 pub use brain::{
