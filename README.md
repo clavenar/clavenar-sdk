@@ -219,7 +219,10 @@ let client = ClavenarClient::builder("http://localhost:8088")?
   Per the GTM plan these are the "Clavenar-Ready" identity story.
 - TS / Python bindings — out of scope for the Rust crate. Likely
   separate `@clavenar/sdk` and `clavenar-sdk` (PyPI) packages built on top
-  of the same wire contract once it's stable.
+  of the same wire contract once it's stable. These are distinct from the
+  existing agent-wrapper SDK `@clavenar/agent-sdk` (repo
+  `clavenar-typescript-sdk`), which guards an Anthropic/OpenAI client
+  rather than calling this control-plane surface.
 
 ## License
 
