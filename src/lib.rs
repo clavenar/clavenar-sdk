@@ -77,6 +77,7 @@ pub use policies::{
     EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest, LabTemplateRequest,
     MineCandidate, MineError, MineLabReplay, MineRequest, MineResponse, MutationResponse,
     PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson, PolicyRow, PolicyTemplate,
+    ValidatePolicyRequest, ValidatePolicyResponse,
     PolicyTemplateDetail, PolicyVersionRow, RollbackRequest, StateChangeRequest,
     UpdatePolicyRequest, VersionsListResponse,
 };
