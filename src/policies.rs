@@ -444,6 +444,23 @@ pub struct PoliciesClient {
     bearer: Option<String>,
 }
 
+/// Body for [`PoliciesClient::validate`].
+#[derive(Debug, serde::Serialize)]
+pub struct ValidatePolicyRequest<'a> {
+    pub name: &'a str,
+    pub content_type: &'a str,
+    pub body: &'a str,
+}
+
+/// Result of [`PoliciesClient::validate`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ValidatePolicyResponse {
+    pub ok: bool,
+    #[serde(default)]
+    pub error: Option<CompileError>,
+}
+
+
 impl PoliciesClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8082`).
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
@@ -557,6 +574,18 @@ impl PoliciesClient {
         req: &CreatePolicyRequest<'_>,
     ) -> Result<MutationResponse, ClavenarError> {
         let url = self.join("policies")?;
+        self.send_json(reqwest::Method::POST, url, req).await
+    }
+
+    /// `POST /policies/validate` — compile-check a draft body without
+    /// saving it, for a console "check syntax" action. Always returns
+    /// 200 with `{ ok, error? }` (a compile failure is a normal
+    /// answer, not an HTTP error).
+    pub async fn validate(
+        &self,
+        req: &ValidatePolicyRequest<'_>,
+    ) -> Result<ValidatePolicyResponse, ClavenarError> {
+        let url = self.join("policies/validate")?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
