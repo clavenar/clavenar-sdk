@@ -219,6 +219,26 @@ fn same_set(a: &[String], b: &[String]) -> bool {
     a == b
 }
 
+/// One active just-in-time delegation grant for an agent, with its live
+/// use count. Mirrors `clavenar-identity::grants_read::GrantConsumption`.
+/// `not_before` / `not_after` / `exp` are RFC3339 strings.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GrantConsumption {
+    pub jti: String,
+    pub agent_spiffe: String,
+    pub human_sub: String,
+    pub max_uses: Option<u32>,
+    pub uses: u32,
+    pub not_before: Option<String>,
+    pub not_after: Option<String>,
+    pub exp: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct GrantsResponse {
+    grants: Vec<GrantConsumption>,
+}
+
 /// Async client for the identity service's `/agents` endpoints.
 ///
 /// Cheap to clone — the inner `reqwest::Client` is `Arc`-based.
@@ -346,6 +366,30 @@ impl AgentsClient {
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         url.query_pairs_mut().append_pair("tenant", tenant);
         self.get_json(url).await
+    }
+
+    /// `GET /grants?tenant=<t>&agent_name=<n>&active=true` — active
+    /// (non-revoked, non-expired) just-in-time grants for an agent, each
+    /// with its live use count. Keyed on `(tenant, agent_name)` because
+    /// that's what a console caller holds; the server matches them against
+    /// the grants' stored SPIFFE. Empty vec on no matches (not 404).
+    pub async fn list_active_grants(
+        &self,
+        tenant: &str,
+        agent_name: &str,
+    ) -> Result<Vec<GrantConsumption>, ClavenarError> {
+        let mut url = self
+            .base_url
+            .join("grants")
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join grants: {e}")))?;
+        {
+            let mut q = url.query_pairs_mut();
+            q.append_pair("tenant", tenant);
+            q.append_pair("agent_name", agent_name);
+            q.append_pair("active", "true");
+        }
+        let resp: GrantsResponse = self.get_json(url).await?;
+        Ok(resp.grants)
     }
 
     /// Look up a record by `(tenant, agent_name)`. Used by
@@ -749,6 +793,55 @@ mod tests {
             other => panic!("expected Server, got {other:?}"),
         }
         let _ = shutdown.send(());
+    }
+
+    #[tokio::test]
+    async fn list_active_grants_returns_consumption_rows() {
+        let app = Router::new().route(
+            "/grants",
+            get(
+                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                    assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
+                    assert_eq!(
+                        q.get("agent_name").map(String::as_str),
+                        Some("support-bot-3")
+                    );
+                    Json(json!({
+                        "grants": [{
+                            "jti": "01HW-jit",
+                            "agent_spiffe": "spiffe://clavenar.local/tenant/acme/agent/support-bot-3",
+                            "human_sub": "user:alice@acme.com",
+                            "max_uses": 3,
+                            "uses": 1,
+                            "not_before": null,
+                            "not_after": "2026-06-11T06:00:00+00:00",
+                            "exp": "2026-06-11T06:00:00+00:00"
+                        }]
+                    }))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let client = AgentsClient::new(format!("http://{addr}/")).unwrap();
+        let grants = client
+            .list_active_grants("acme", "support-bot-3")
+            .await
+            .unwrap();
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].max_uses, Some(3));
+        assert_eq!(grants[0].uses, 1);
+        assert_eq!(grants[0].not_before, None);
+        let _ = tx.send(());
     }
 
     #[test]
