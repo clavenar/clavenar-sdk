@@ -332,6 +332,59 @@ pub struct EnvelopeAnalysis {
     pub used_tools: Vec<ToolUsage>,
 }
 
+/// Filters for [`LedgerClient::hunt`]. All optional except `limit`; an
+/// empty `HuntParams { limit, ..Default::default() }` rolls up every
+/// agent active in the chain.
+#[derive(Debug, Clone, Default)]
+pub struct HuntParams {
+    /// Exact-match on the row's `method`.
+    pub method: Option<String>,
+    /// Exact-match on the `signal` column (rejection / egress vocabulary).
+    pub signal: Option<String>,
+    /// `Some(true)` authorized-only, `Some(false)` denied-only, `None` any.
+    pub authorized: Option<bool>,
+    /// Lower bound on the row timestamp — the selective, indexed filter.
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    /// Upper bound on the row timestamp.
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    /// Max agent rows returned. Server-clamps to [1, 1000].
+    pub limit: i64,
+}
+
+/// One agent's roll-up row in a [`HuntResult`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct HuntAgentRollup {
+    pub agent_id: String,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    /// Total rows this agent emitted in the filtered window.
+    pub hit_count: i64,
+    /// Of those, how many were denials (`authorized = false`).
+    pub deny_count: i64,
+    /// Highest-severity signal this agent emitted in the window, as a
+    /// canonical signal string; `None` when no ranked signal was seen.
+    #[serde(default)]
+    pub worst_signal: Option<String>,
+    /// Newest matching row's RFC 3339 timestamp.
+    pub latest_hit_ts: String,
+    /// Distinct methods this agent invoked in the window.
+    #[serde(default)]
+    pub methods: Vec<String>,
+}
+
+/// Response from [`LedgerClient::hunt`] — the fleet-wide incident
+/// rollup, ordered worst-signal-first.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct HuntResult {
+    pub agents: Vec<HuntAgentRollup>,
+    /// `agents.len()`; compare against the requested `limit` to learn
+    /// whether the server clamp bit.
+    pub returned: i64,
+    #[serde(default)]
+    pub from: Option<String>,
+    #[serde(default)]
+    pub to: Option<String>,
+}
 
 impl LedgerClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8083`).
@@ -633,6 +686,31 @@ impl LedgerClient {
             percent_encode(agent_id),
             window_days,
         );
+        self.get_json(&path).await
+    }
+
+    /// `GET /audit/hunt` — fleet-wide incident hunt. One server-side
+    /// aggregation rolls every agent active in the filtered window into
+    /// a single row (hit/deny counts, worst signal, distinct methods,
+    /// last seen), worst-signal-first. Internal (mTLS) surface — the
+    /// console reaches it with its operator-authenticated client.
+    pub async fn hunt(&self, params: HuntParams) -> Result<HuntResult, ClavenarError> {
+        let mut path = format!("audit/hunt?limit={}", params.limit);
+        if let Some(m) = params.method.as_deref() {
+            path.push_str(&format!("&method={}", percent_encode(m)));
+        }
+        if let Some(s) = params.signal.as_deref() {
+            path.push_str(&format!("&signal={}", percent_encode(s)));
+        }
+        if let Some(a) = params.authorized {
+            path.push_str(&format!("&authorized={a}"));
+        }
+        if let Some(f) = params.from {
+            path.push_str(&format!("&from={}", percent_encode(&f.to_rfc3339())));
+        }
+        if let Some(t) = params.to {
+            path.push_str(&format!("&to={}", percent_encode(&t.to_rfc3339())));
+        }
         self.get_json(&path).await
     }
 
