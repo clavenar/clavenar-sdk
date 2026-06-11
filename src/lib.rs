@@ -63,10 +63,10 @@ pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
-    ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry, EnvelopeAnalysis,
-    EvidenceStatus, ExportRecord, HuntAgentRollup, HuntParams, HuntResult, LedgerClient,
-    LedgerEntry, LifecycleRow, RegisterWindow, RegulatoryExportOptions, ReplayCorpus,
-    ReplayCorpusParams, ToolUsage, VerifyResult,
+    CaseDetail, CaseRecord, CaseTimelineEvent, ChainVerifySummary, ComplianceRegister,
+    ControlEvidence, CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportRecord, HuntAgentRollup,
+    HuntParams, HuntResult, LedgerClient, LedgerEntry, LifecycleRow, RegisterWindow,
+    RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, ToolUsage, VerifyResult,
 };
 pub use brain::{
     BrainClient, ExplainPatternRequest, ExplainPatternResponse,

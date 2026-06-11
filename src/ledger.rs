@@ -386,6 +386,39 @@ pub struct HuntResult {
     pub to: Option<String>,
 }
 
+/// One entry in an incident case's activity timeline.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CaseTimelineEvent {
+    pub at: String,
+    pub kind: String,
+    pub actor: String,
+    pub detail: String,
+}
+
+/// A persistent incident case ([`LedgerClient::create_case`] et al.).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CaseRecord {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub agent_ids: Vec<String>,
+    #[serde(default)]
+    pub correlation_ids: Vec<String>,
+    #[serde(default)]
+    pub timeline: Vec<CaseTimelineEvent>,
+}
+
+/// A case plus its expanded chain evidence ([`LedgerClient::get_case`]).
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct CaseDetail {
+    pub case: CaseRecord,
+    #[serde(default)]
+    pub evidence: Vec<LedgerEntry>,
+}
+
 impl LedgerClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8083`).
     /// Returns `InvalidConfig` if the URL is malformed.
@@ -822,6 +855,103 @@ impl LedgerClient {
         let status = resp.status();
         let raw = resp.text().await?;
         if status == StatusCode::OK {
+            serde_json::from_str(&raw).map_err(ClavenarError::Decode)
+        } else {
+            Err(ClavenarError::Server { status, body: raw })
+        }
+    }
+
+    /// `POST /cases` — open an incident case over the given agents +
+    /// correlations. Returns the created case.
+    pub async fn create_case(
+        &self,
+        title: &str,
+        agent_ids: &[String],
+        correlation_ids: &[String],
+        actor: Option<&str>,
+    ) -> Result<CaseRecord, ClavenarError> {
+        let body = serde_json::json!({
+            "title": title,
+            "agent_ids": agent_ids,
+            "correlation_ids": correlation_ids,
+            "actor": actor,
+        });
+        self.post_json("cases", &body).await
+    }
+
+    /// `GET /cases` — list cases newest-first, optionally filtered by
+    /// status (`open` / `contained` / `closed`).
+    pub async fn list_cases(
+        &self,
+        status: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<CaseRecord>, ClavenarError> {
+        let mut path = format!("cases?limit={limit}");
+        if let Some(s) = status {
+            path.push_str(&format!("&status={}", percent_encode(s)));
+        }
+        self.get_json(&path).await
+    }
+
+    /// `GET /cases/{id}` — the case plus its expanded chain evidence.
+    pub async fn get_case(&self, id: &str) -> Result<CaseDetail, ClavenarError> {
+        self.get_json(&format!("cases/{}", percent_encode(id))).await
+    }
+
+    /// `POST /cases/{id}/timeline` — append an event.
+    pub async fn append_case_timeline(
+        &self,
+        id: &str,
+        ev: &CaseTimelineEvent,
+    ) -> Result<(), ClavenarError> {
+        self.post_json(&format!("cases/{}/timeline", percent_encode(id)), ev)
+            .await
+    }
+
+    /// `POST /cases/{id}/status` — set `open` / `contained` / `closed`.
+    pub async fn set_case_status(&self, id: &str, status: &str) -> Result<(), ClavenarError> {
+        self.post_json(
+            &format!("cases/{}/status", percent_encode(id)),
+            &serde_json::json!({ "status": status }),
+        )
+        .await
+    }
+
+    /// `POST /cases/{id}/attach` — union more agents/correlations in.
+    pub async fn attach_case(
+        &self,
+        id: &str,
+        agent_ids: &[String],
+        correlation_ids: &[String],
+    ) -> Result<(), ClavenarError> {
+        self.post_json(
+            &format!("cases/{}/attach", percent_encode(id)),
+            &serde_json::json!({ "agent_ids": agent_ids, "correlation_ids": correlation_ids }),
+        )
+        .await
+    }
+
+    /// Internal: POST `<base_url>/<path>` with a JSON body, decode the
+    /// JSON response on any 2xx (a 204 No Content decodes as `()` via an
+    /// empty-body→`null` fallback); `Server { status, body }` otherwise.
+    async fn post_json<B: serde::Serialize, T: serde::de::DeserializeOwned>(
+        &self,
+        path: &str,
+        body: &B,
+    ) -> Result<T, ClavenarError> {
+        let endpoint = self
+            .base_url
+            .join(path)
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
+        let resp = self.http.client().post(endpoint).json(body).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+        if status.is_success() {
+            let raw = if raw.trim().is_empty() {
+                "null".to_string()
+            } else {
+                raw
+            };
             serde_json::from_str(&raw).map_err(ClavenarError::Decode)
         } else {
             Err(ClavenarError::Server { status, body: raw })
