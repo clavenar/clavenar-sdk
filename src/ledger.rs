@@ -312,6 +312,27 @@ pub struct LedgerClient {
     http: Arc<dyn HttpProvider>,
 }
 
+/// One tool's windowed usage in [`EnvelopeAnalysis`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ToolUsage {
+    pub tool_type: String,
+    pub used_count: i64,
+    /// `high` / `medium` / `low`, keyed to the call count.
+    pub confidence: String,
+}
+
+/// Response from [`LedgerClient::envelope_analysis`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct EnvelopeAnalysis {
+    pub agent_id: String,
+    pub window_days: i64,
+    pub since: String,
+    pub until: String,
+    pub total_calls: i64,
+    pub used_tools: Vec<ToolUsage>,
+}
+
+
 impl LedgerClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8083`).
     /// Returns `InvalidConfig` if the URL is malformed.
@@ -595,6 +616,23 @@ impl LedgerClient {
         if let Some(t) = params.tool_type.as_deref() {
             path.push_str(&format!("&tool_type={}", percent_encode(t)));
         }
+        self.get_json(&path).await
+    }
+
+    /// `GET /analysis/agent-envelope-recommendations` — the used-tool
+    /// side of Blast-Radius Autopilot. Returns per-tool usage counts +
+    /// confidence over the window for one agent; the caller joins it
+    /// against the agent's provisioned `scope_envelope`.
+    pub async fn envelope_analysis(
+        &self,
+        agent_id: &str,
+        window_days: u32,
+    ) -> Result<EnvelopeAnalysis, ClavenarError> {
+        let path = format!(
+            "analysis/agent-envelope-recommendations?agent_id={}&window_days={}",
+            percent_encode(agent_id),
+            window_days,
+        );
         self.get_json(&path).await
     }
 
