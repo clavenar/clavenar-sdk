@@ -409,6 +409,13 @@ pub struct CaseRecord {
     pub correlation_ids: Vec<String>,
     #[serde(default)]
     pub timeline: Vec<CaseTimelineEvent>,
+    /// EU AI Act Art 73 severity once classified (`serious` / `death` /
+    /// `critical_infra`); `None` until an operator classifies the case.
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// RFC 3339 authority-notification deadline stamped at classification.
+    #[serde(default)]
+    pub regulatory_deadline: Option<String>,
 }
 
 /// A case plus its expanded chain evidence ([`LedgerClient::get_case`]).
@@ -915,6 +922,28 @@ impl LedgerClient {
             &serde_json::json!({ "status": status }),
         )
         .await
+    }
+
+    /// `POST /cases/{id}/classify` — set the EU AI Act Art 73 severity
+    /// (`serious` / `death` / `critical_infra`); the server stamps the
+    /// authority-notification deadline. Returns `(severity, deadline)`.
+    pub async fn classify_case(
+        &self,
+        id: &str,
+        severity: &str,
+    ) -> Result<(String, String), ClavenarError> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            severity: String,
+            regulatory_deadline: String,
+        }
+        let r: Resp = self
+            .post_json(
+                &format!("cases/{}/classify", percent_encode(id)),
+                &serde_json::json!({ "severity": severity }),
+            )
+            .await?;
+        Ok((r.severity, r.regulatory_deadline))
     }
 
     /// `POST /cases/{id}/attach` — union more agents/correlations in.
