@@ -129,6 +129,14 @@ pub struct LedgerEntry {
     /// hashing; the field is metadata, not an integrity primitive.
     #[serde(default)]
     pub approver_assertion: Option<String>,
+    /// Chain v4 — `sha256(canonical_json(brain_evidence))` (EU AI Act
+    /// Art 12). Set on a v4 verdict row whose publisher captured the
+    /// Brain's deterministic inputs; the canonical evidence JSON lives
+    /// in the ledger's `entry_payloads` table. Hashable on v4 (the chain
+    /// commits to it); `None` on v1/v2/v3 rows. Mirrors
+    /// `clavenar_ledger::LedgerEntry::brain_evidence_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain_evidence_sha256: Option<String>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
@@ -799,11 +807,13 @@ impl LedgerClient {
     /// produce a regulatory `.tar.gz` for the half-open time window
     /// `[from, to)`. Returns the raw bundle bytes. The bundle layout
     /// and auditor verification recipe live in
-    /// `clavenar-ledger/src/regulatory.rs`. Manifest schema v5 ships
+    /// `clavenar-ledger/src/regulatory.rs`. Manifest schema v6 ships
     /// chain rows plus optional operator prose, optional Parquet
     /// pointers, an optional auto-derived compliance register, optional
-    /// external chain-anchor proofs, and an optional ed25519 detached
-    /// signature.
+    /// external chain-anchor proofs, an optional EU AI Act Annex IV
+    /// coverage assertion and Article 72 post-market-monitoring plan
+    /// (operator-triggered via the `annex_iv` / `include_post_market_plan`
+    /// query params), and an optional ed25519 detached signature.
     ///
     /// `opts.readme` (optional) is the operator-supplied prose
     /// embedded as `technical_documentation.md`. The SDK uploads it
@@ -1119,6 +1129,47 @@ mod tests {
         });
         let parsed: LedgerEntry = serde_json::from_value(v1).unwrap();
         assert_eq!(parsed.chain_version, 2);
+    }
+
+    #[test]
+    fn ledger_entry_decodes_v4_brain_evidence() {
+        // A v4 verdict row carries `brain_evidence_sha256`; older rows
+        // omit it (default None), so the mirror stays a forgiving subset.
+        let v4 = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "timestamp": "2026-06-12T12:34:56Z",
+            "agent_id": "demo-bot",
+            "method": "tools/call",
+            "intent_category": "DirectExecution",
+            "authorized": true,
+            "reasoning": "security: ok | upstream: ok",
+            "policy_decision": null,
+            "seq": 7,
+            "prev_hash": "0".repeat(64),
+            "entry_hash": "a".repeat(64),
+            "chain_version": 4,
+            "brain_evidence_sha256": "b".repeat(64),
+        });
+        let parsed: LedgerEntry = serde_json::from_value(v4).unwrap();
+        assert_eq!(parsed.chain_version, 4);
+        assert_eq!(parsed.brain_evidence_sha256.as_deref(), Some("b".repeat(64).as_str()));
+
+        // Legacy row without the field decodes to None.
+        let legacy = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440001",
+            "timestamp": "2026-06-12T12:34:56Z",
+            "agent_id": "demo-bot",
+            "method": "tools/call",
+            "intent_category": "DirectExecution",
+            "authorized": true,
+            "reasoning": "ok",
+            "policy_decision": null,
+            "seq": 1,
+            "prev_hash": "0".repeat(64),
+            "entry_hash": "a".repeat(64),
+        });
+        let parsed: LedgerEntry = serde_json::from_value(legacy).unwrap();
+        assert!(parsed.brain_evidence_sha256.is_none());
     }
 
     #[test]
