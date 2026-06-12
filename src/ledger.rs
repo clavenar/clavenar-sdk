@@ -137,6 +137,14 @@ pub struct LedgerEntry {
     /// `clavenar_ledger::LedgerEntry::brain_evidence_sha256`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brain_evidence_sha256: Option<String>,
+    /// Per-detector Brain confidence scores for this verdict (opaque
+    /// JSON: injection / malicious-code / compromised-package / drift
+    /// confidences + intent). Non-hashable annotation data — never a
+    /// chain-integrity primitive. `None` on rows whose publisher
+    /// captured no scores. Mirrors
+    /// `clavenar_ledger::LedgerEntry::brain_scores`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brain_scores: Option<serde_json::Value>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
@@ -1170,6 +1178,51 @@ mod tests {
         });
         let parsed: LedgerEntry = serde_json::from_value(legacy).unwrap();
         assert!(parsed.brain_evidence_sha256.is_none());
+    }
+
+    #[test]
+    fn ledger_entry_decodes_brain_scores() {
+        // Non-hashable per-detector scores ride as opaque JSON; rows
+        // without them (the overwhelming majority) decode to None.
+        let with_scores = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440002",
+            "timestamp": "2026-06-12T12:34:56Z",
+            "agent_id": "demo-abc123",
+            "method": "call_tool",
+            "intent_category": "Meta-Reasoning",
+            "authorized": false,
+            "reasoning": "Potential bypass attempt detected (Heuristic)",
+            "policy_decision": null,
+            "seq": 9,
+            "prev_hash": "0".repeat(64),
+            "entry_hash": "a".repeat(64),
+            "brain_scores": {
+                "injection_confidence": 0.85,
+                "malicious_code_confidence": 0.0,
+                "compromised_package_confidence": 0.0,
+                "persona_drift_score": 0.0,
+                "drift_available": false,
+            },
+        });
+        let parsed: LedgerEntry = serde_json::from_value(with_scores).unwrap();
+        let scores = parsed.brain_scores.expect("scores present");
+        assert_eq!(scores["injection_confidence"], 0.85);
+
+        let without = serde_json::json!({
+            "id": "550e8400-e29b-41d4-a716-446655440003",
+            "timestamp": "2026-06-12T12:34:56Z",
+            "agent_id": "demo-abc123",
+            "method": "call_tool",
+            "intent_category": "DirectExecution",
+            "authorized": true,
+            "reasoning": "ok",
+            "policy_decision": null,
+            "seq": 10,
+            "prev_hash": "0".repeat(64),
+            "entry_hash": "a".repeat(64),
+        });
+        let parsed: LedgerEntry = serde_json::from_value(without).unwrap();
+        assert!(parsed.brain_scores.is_none());
     }
 
     #[test]
