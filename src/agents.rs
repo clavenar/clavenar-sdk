@@ -219,6 +219,12 @@ pub struct AgentCreated {
 pub struct EnvelopeRequest<'a> {
     pub scope_envelope: &'a [String],
     pub yellow_envelope: &'a [String],
+    /// Optional free-text rationale committed onto the
+    /// `agent.envelope_narrowed` / `widened` chain event — e.g. the
+    /// Blast-Radius Autopilot recommendation a narrow was applied from.
+    /// Additive; older callers omit it and the server defaults it null.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'a str>,
 }
 
 /// Request shape for the suspend / unsuspend / decommission
@@ -1328,6 +1334,7 @@ mod tests {
                 EnvelopeRequest {
                     scope_envelope: &smaller,
                     yellow_envelope: &yellow,
+                    reason: None,
                 },
             )
             .await
@@ -1344,6 +1351,7 @@ mod tests {
                 EnvelopeRequest {
                     scope_envelope: &bad,
                     yellow_envelope: &yellow,
+                    reason: None,
                 },
             )
             .await
