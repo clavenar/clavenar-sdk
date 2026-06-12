@@ -97,6 +97,66 @@ pub struct AgentRecord {
     pub state_changed_at: String,
     pub state_changed_by: String,
     pub description: Option<String>,
+    /// SDK version the agent was certified against by the pre-flight
+    /// gauntlet, or `None`. `#[serde(default)]` so a response from a
+    /// not-yet-redeployed identity (no column) still deserializes.
+    #[serde(default)]
+    pub certified_at_version: Option<String>,
+    /// RFC 3339 timestamp of the certification, or `None`.
+    #[serde(default)]
+    pub certified_at: Option<String>,
+}
+
+/// One agent-targeted gauntlet case recorded on a certificate. Mirror of
+/// `clavenar-identity::agents::lifecycle::CertificationCase`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CertificationCase {
+    pub id: String,
+    pub category: String,
+    pub expected: String,
+    pub observed: String,
+    pub passed: bool,
+}
+
+/// Body for `POST /agents/{id}/certification` — the gauntlet result
+/// `clavenarctl agents certify` submits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificationRequest {
+    pub sdk_version: String,
+    pub proxy_url: String,
+    pub catalog_sha256: String,
+    pub cases: Vec<CertificationCase>,
+    pub total: u32,
+    pub passed: u32,
+}
+
+/// Canonical certificate body identity computes, signs, and returns. An
+/// auditor recomputes `sha256(canonical_json(body))` and verifies it
+/// against identity's JWKS by `key_id`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CertificateBody {
+    pub schema: String,
+    pub agent_id: String,
+    pub tenant: String,
+    pub agent_name: String,
+    pub sdk_version: String,
+    pub proxy_url: String,
+    pub catalog_sha256: String,
+    pub cases: Vec<CertificationCase>,
+    pub total: u32,
+    pub passed: u32,
+    pub certified_at: String,
+}
+
+/// `POST /agents/{id}/certification` response — the signed survival
+/// certificate. ctl writes this verbatim as the sidecar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedCertificate {
+    pub certificate: CertificateBody,
+    pub certificate_sha256: String,
+    pub signature: String,
+    pub key_id: String,
+    pub algorithm: String,
 }
 
 /// Optional filters for [`AgentsClient::list`]. Fields map to query
@@ -500,6 +560,19 @@ impl AgentsClient {
         self.post_json(url, &body).await
     }
 
+    /// `POST /agents/{id}/certification`. Admin only. Submits a passing
+    /// pre-flight gauntlet result; identity computes + signs the
+    /// certificate and returns it (the caller writes the sidecar).
+    pub async fn record_certification(
+        &self,
+        id: &str,
+        tenant: &str,
+        req: &CertificationRequest,
+    ) -> Result<SignedCertificate, ClavenarError> {
+        let url = self.id_with_tenant(id, "certification", tenant)?;
+        self.post_json(url, req).await
+    }
+
     /// `POST /agents/{id}/description`. Owner-team or admin. Pass
     /// `None` for `text` to clear the description.
     pub async fn set_description(
@@ -709,6 +782,8 @@ mod tests {
             state_changed_at: "2026-05-01T00:00:00+00:00".into(),
             state_changed_by: "user:alice@acme.com".into(),
             description: None,
+            certified_at_version: None,
+            certified_at: None,
         }
     }
 
@@ -861,6 +936,8 @@ mod tests {
             state_changed_at: "2026-05-01T00:00:00Z".into(),
             state_changed_by: "u".into(),
             description: None,
+            certified_at_version: None,
+            certified_at: None,
         };
         // Wire form is lowercase per the spec; deserialize back round-trips.
         let v = serde_json::to_value(&r).unwrap();
@@ -919,6 +996,8 @@ mod tests {
             state_changed_at: "2026-05-04T00:00:00Z".into(),
             state_changed_by: "user:alice@acme.com".into(),
             description: None,
+            certified_at_version: None,
+            certified_at: None,
         }
     }
 
@@ -1029,6 +1108,8 @@ mod tests {
             state_changed_at: "2026-05-04T00:00:00Z".into(),
             state_changed_by: "user:test".into(),
             description: body["description"].as_str().map(String::from),
+            certified_at_version: None,
+            certified_at: None,
         };
         rows.push(record.clone());
         let response = json!({
