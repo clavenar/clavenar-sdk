@@ -186,6 +186,38 @@ pub struct VerifyResult {
     pub first_invalid_seq: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unsupported_chain_version: Option<i64>,
+    /// External-anchor cross-checks (RFC 3161 / webhook notary roots vs the
+    /// live chain). Empty when nothing is anchored or on the Postgres
+    /// backend. Defaulted so older ledgers (no field) still decode.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<AnchorSummary>,
+    /// `Some(true)` when an anchored root no longer matches the live chain —
+    /// a rewrite-below-a-notarized-root signal that stands even when `valid`
+    /// is true. `Some(false)` when anchors exist and all match; `None` when
+    /// nothing is anchored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchor_mismatch: Option<bool>,
+}
+
+/// One anchored chain root surfaced on `GET /verify`. Mirrors
+/// `clavenar_ledger::AnchorSummary` field-for-field.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnchorSummary {
+    pub anchored_seq: i64,
+    pub anchored_entry_hash: String,
+    pub source: String,
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gen_time: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proof_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anchored_at: Option<String>,
+    /// `Some(true)` the live chain still matches the anchored root;
+    /// `Some(false)` mismatch (tamper); `None` the row was vacuumed below
+    /// the cold-tier cursor (verify the proof offline against the bundle).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chain_match: Option<bool>,
 }
 
 /// One row of the Policy Lab replay corpus.
@@ -767,9 +799,11 @@ impl LedgerClient {
     /// produce a regulatory `.tar.gz` for the half-open time window
     /// `[from, to)`. Returns the raw bundle bytes. The bundle layout
     /// and auditor verification recipe live in
-    /// `clavenar-ledger/src/regulatory.rs`. Manifest schema v3 ships
+    /// `clavenar-ledger/src/regulatory.rs`. Manifest schema v5 ships
     /// chain rows plus optional operator prose, optional Parquet
-    /// pointers, and an optional ed25519 detached signature.
+    /// pointers, an optional auto-derived compliance register, optional
+    /// external chain-anchor proofs, and an optional ed25519 detached
+    /// signature.
     ///
     /// `opts.readme` (optional) is the operator-supplied prose
     /// embedded as `technical_documentation.md`. The SDK uploads it
@@ -1156,6 +1190,38 @@ mod tests {
         assert!(!parsed.valid);
         assert!(parsed.first_invalid_seq.is_none());
         assert_eq!(parsed.unsupported_chain_version, Some(2));
+        // Anchors default to empty / None when the ledger omits them
+        // (pre-anchoring builds, or nothing anchored yet).
+        assert!(parsed.anchors.is_empty());
+        assert!(parsed.anchor_mismatch.is_none());
+    }
+
+    #[test]
+    fn verify_result_decodes_anchor_cross_checks() {
+        // A ledger with external anchoring surfaces the anchor list plus a
+        // top-level mismatch flag; the SDK mirror must carry both.
+        let with_anchors = serde_json::json!({
+            "valid": true,
+            "entries_checked": 9,
+            "first_invalid_seq": null,
+            "anchors": [{
+                "anchored_seq": 7,
+                "anchored_entry_hash": "ab",
+                "source": "rfc3161",
+                "status": "anchored",
+                "gen_time": "2026-06-12T00:00:00Z",
+                "proof_sha256": "cd",
+                "anchored_at": "2026-06-12T00:00:01Z",
+                "chain_match": false
+            }],
+            "anchor_mismatch": true
+        });
+        let parsed: VerifyResult = serde_json::from_value(with_anchors).unwrap();
+        assert!(parsed.valid);
+        assert_eq!(parsed.anchors.len(), 1);
+        assert_eq!(parsed.anchors[0].source, "rfc3161");
+        assert_eq!(parsed.anchors[0].chain_match, Some(false));
+        assert_eq!(parsed.anchor_mismatch, Some(true));
     }
 
     #[test]
