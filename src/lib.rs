@@ -57,7 +57,7 @@ mod sim;
 pub use agents::{
     create_request_matches, AgentCreated, AgentListFilter, AgentRecord, AgentState, AgentsClient,
     CertificateBody, CertificationCase, CertificationRequest, CreateAgentRequest, EnvelopeRequest,
-    GrantConsumption, LifecycleRequest, LifecycleResponse, SignedCertificate,
+    GrantConsumption, LifecycleRequest, LifecycleResponse, OrphanWorkload, SignedCertificate,
     MIGRATION_ACTOR_SUB_PREFIX,
 };
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};

@@ -167,6 +167,18 @@ pub struct AgentListFilter {
     pub owner_team: Option<String>,
 }
 
+/// One unenrolled workload from [`AgentsClient::list_orphans`] — a name
+/// that minted an SVID but has no row in the agents registry. Mirror of
+/// `clavenar_identity::agents::OrphanWorkload`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OrphanWorkload {
+    pub agent_name: String,
+    /// Most recent SVID issuance for this name (RFC 3339).
+    pub last_seen: String,
+    /// How many SVIDs this name has minted over time.
+    pub svid_count: i64,
+}
+
 /// Spec §5.2 — `POST /agents` request body. Borrowed-string fields
 /// so the CLI / console can pass slices off the parsed args without
 /// allocating; `Vec<String>` for the multi-value envelopes for the
@@ -417,6 +429,21 @@ impl AgentsClient {
                 q.append_pair("owner_team", team);
             }
         }
+        self.get_json(url).await
+    }
+
+    /// `GET /agents/orphans?tenant=<t>` — the workload-discovery feed:
+    /// names that minted an SVID but were never registered as agents.
+    /// Empty vec when the registry already covers every minted name.
+    pub async fn list_orphans(
+        &self,
+        tenant: &str,
+    ) -> Result<Vec<OrphanWorkload>, ClavenarError> {
+        let mut url = self
+            .base_url
+            .join("agents/orphans")
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join agents/orphans: {e}")))?;
+        url.query_pairs_mut().append_pair("tenant", tenant);
         self.get_json(url).await
     }
 
@@ -922,6 +949,39 @@ mod tests {
         assert_eq!(grants[0].max_uses, Some(3));
         assert_eq!(grants[0].uses, 1);
         assert_eq!(grants[0].not_before, None);
+        let _ = tx.send(());
+    }
+
+    #[tokio::test]
+    async fn list_orphans_round_trips_workloads() {
+        let app = Router::new().route(
+            "/agents/orphans",
+            get(
+                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                    assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
+                    Json(json!([
+                        {"agent_name": "ghost-bot", "last_seen": "2026-05-05T00:00:00Z", "svid_count": 2},
+                        {"agent_name": "shadow-bot", "last_seen": "2026-05-04T00:00:00Z", "svid_count": 1}
+                    ]))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (tx, rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = rx.await;
+                })
+                .await
+                .unwrap();
+        });
+        let client = AgentsClient::new(format!("http://{addr}/")).unwrap();
+        let orphans = client.list_orphans("acme").await.unwrap();
+        assert_eq!(orphans.len(), 2);
+        assert_eq!(orphans[0].agent_name, "ghost-bot");
+        assert_eq!(orphans[0].svid_count, 2);
         let _ = tx.send(());
     }
 
