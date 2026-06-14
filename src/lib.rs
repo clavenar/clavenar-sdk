@@ -66,10 +66,10 @@ pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
     AnchorSummary, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline, CaseDetail,
     CaseRecord, CaseTimelineEvent, ChainVerifySummary, ComplianceRegister, ControlEvidence,
-    CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportRecord, HuntAgentRollup, HuntParams,
-    HuntResult, LedgerClient, LedgerEntry, LifecycleRow, RegisterWindow, RegulatoryExportOptions,
-    ReplayCorpus, ReplayCorpusParams, SpendAgentRow, SpendRollup, ToolShare, ToolUsage,
-    VerifyResult,
+    CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportRecord, FleetBehavioralDiff, FleetDiffRow,
+    HuntAgentRollup, HuntParams, HuntResult, LedgerClient, LedgerEntry, LifecycleRow,
+    RegisterWindow, RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SpendAgentRow,
+    SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
 };
 pub use brain::{
     BrainClient, ExplainPatternRequest, ExplainPatternResponse,

@@ -412,6 +412,20 @@ pub struct BaselineDeviation {
     pub overall: f64,
 }
 
+/// Window-over-window diff in [`BehavioralBaseline`] — the "what changed"
+/// companion to the scalar [`BaselineDeviation`]. Deltas are signed
+/// `recent − baseline`.
+#[derive(Debug, Clone, Default, serde::Deserialize, serde::Serialize)]
+pub struct WindowDiff {
+    /// Tools in the recent window but absent from baseline, most-used first.
+    pub new_tools: Vec<String>,
+    /// Tools in the baseline window but absent from recent, most-used first.
+    pub vanished_tools: Vec<String>,
+    pub deny_rate_delta: f64,
+    pub intent_delta: f64,
+    pub total_delta: i64,
+}
+
 /// Response from [`LedgerClient::behavioral_baseline`] — a recent window
 /// profiled against the immediately-prior baseline window, with a drift score.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
@@ -422,8 +436,42 @@ pub struct BehavioralBaseline {
     pub baseline: BaselineWindowProfile,
     pub recent: BaselineWindowProfile,
     pub deviation: BaselineDeviation,
+    /// New/vanished tools + signed rate deltas between the two windows.
+    /// `#[serde(default)]` so a baseline response from a pre-window-diff
+    /// ledger still deserializes (empty diff).
+    #[serde(default)]
+    pub diff: WindowDiff,
     pub drifted: bool,
     pub insufficient: bool,
+}
+
+/// One agent's row in [`FleetBehavioralDiff`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FleetDiffRow {
+    pub agent_id: String,
+    pub recent_total: i64,
+    pub baseline_total: i64,
+    pub deny_rate_delta: f64,
+    pub intent_delta: f64,
+    pub total_delta: i64,
+    pub new_tools: Vec<String>,
+    pub vanished_tools: Vec<String>,
+    pub drift_overall: f64,
+    pub drifted: bool,
+    pub insufficient: bool,
+}
+
+/// Response from [`LedgerClient::fleet_behavioral_diff`] — every profiled
+/// agent's recent-vs-prior window diff + drift, drift-descending.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct FleetBehavioralDiff {
+    pub baseline_days: i64,
+    pub recent_days: i64,
+    pub since_baseline: String,
+    pub since_recent: String,
+    pub now: String,
+    pub agents: Vec<FleetDiffRow>,
+    pub returned: i64,
 }
 
 /// Filters for [`LedgerClient::hunt`]. All optional except `limit`; an
@@ -870,6 +918,24 @@ impl LedgerClient {
             percent_encode(agent_id),
             baseline_days,
             recent_days,
+        );
+        self.get_json(&path).await
+    }
+
+    /// `GET /analysis/fleet-behavioral-diff` — Temporal intelligence,
+    /// fleet-wide. Rolls every profiled agent's recent-vs-prior window diff +
+    /// drift into one drift-descending list. The server clamps `limit` to
+    /// [1, 1000]; the window defaults to week-over-week (`recent_days=7`,
+    /// `baseline_days=14`). Internal (mTLS) surface, like [`Self::hunt`].
+    pub async fn fleet_behavioral_diff(
+        &self,
+        baseline_days: u32,
+        recent_days: u32,
+        limit: i64,
+    ) -> Result<FleetBehavioralDiff, ClavenarError> {
+        let path = format!(
+            "analysis/fleet-behavioral-diff?baseline_days={}&recent_days={}&limit={}",
+            baseline_days, recent_days, limit,
         );
         self.get_json(&path).await
     }
