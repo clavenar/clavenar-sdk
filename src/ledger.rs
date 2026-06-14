@@ -145,6 +145,13 @@ pub struct LedgerEntry {
     /// `clavenar_ledger::LedgerEntry::brain_scores`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub brain_scores: Option<serde_json::Value>,
+    /// SHA-256 (hex) of the canonical request `params` the proxy judged —
+    /// a tamper-evident commitment to *what the agent sent*, never the
+    /// payload itself. Non-hashable annotation. `None` on rows whose
+    /// publisher captured no params. Mirrors
+    /// `clavenar_ledger::LedgerEntry::tool_params_sha256`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_params_sha256: Option<String>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
