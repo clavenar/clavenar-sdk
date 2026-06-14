@@ -380,6 +380,52 @@ pub struct EnvelopeAnalysis {
     pub used_tools: Vec<ToolUsage>,
 }
 
+/// One tool's share of a window in [`BehavioralBaseline`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ToolShare {
+    pub tool_type: String,
+    pub count: i64,
+}
+
+/// One window's behavioral profile in [`BehavioralBaseline`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BaselineWindowProfile {
+    pub since: String,
+    pub until: String,
+    pub total: i64,
+    pub authorized: i64,
+    pub denied: i64,
+    pub deny_rate: f64,
+    pub intent_mean: f64,
+    pub tool_mix: Vec<ToolShare>,
+    /// 24 entries, UTC hour-of-day.
+    pub hourly: Vec<i64>,
+}
+
+/// Per-dimension + overall deviation in [`BehavioralBaseline`], each `[0, 1]`.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BaselineDeviation {
+    pub tool_mix: f64,
+    pub hourly: f64,
+    pub intent: f64,
+    pub deny_rate: f64,
+    pub overall: f64,
+}
+
+/// Response from [`LedgerClient::behavioral_baseline`] — a recent window
+/// profiled against the immediately-prior baseline window, with a drift score.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct BehavioralBaseline {
+    pub agent_id: String,
+    pub baseline_days: i64,
+    pub recent_days: i64,
+    pub baseline: BaselineWindowProfile,
+    pub recent: BaselineWindowProfile,
+    pub deviation: BaselineDeviation,
+    pub drifted: bool,
+    pub insufficient: bool,
+}
+
 /// Filters for [`LedgerClient::hunt`]. All optional except `limit`; an
 /// empty `HuntParams { limit, ..Default::default() }` rolls up every
 /// agent active in the chain.
@@ -805,6 +851,25 @@ impl LedgerClient {
             "analysis/agent-envelope-recommendations?agent_id={}&window_days={}",
             percent_encode(agent_id),
             window_days,
+        );
+        self.get_json(&path).await
+    }
+
+    /// `GET /analysis/agent-behavioral-baseline` — Temporal intelligence.
+    /// Profiles the agent's recent window (tool mix, hourly cadence, intent +
+    /// deny-rate) against the immediately-prior baseline window and returns a
+    /// drift score. Internal (mTLS) surface, like [`Self::envelope_analysis`].
+    pub async fn behavioral_baseline(
+        &self,
+        agent_id: &str,
+        baseline_days: u32,
+        recent_days: u32,
+    ) -> Result<BehavioralBaseline, ClavenarError> {
+        let path = format!(
+            "analysis/agent-behavioral-baseline?agent_id={}&baseline_days={}&recent_days={}",
+            percent_encode(agent_id),
+            baseline_days,
+            recent_days,
         );
         self.get_json(&path).await
     }
