@@ -67,8 +67,8 @@ pub use ledger::{
     AnchorSummary, CaseDetail, CaseRecord, CaseTimelineEvent, ChainVerifySummary,
     ComplianceRegister, ControlEvidence, CorpusEntry, EnvelopeAnalysis, EvidenceStatus,
     ExportRecord, HuntAgentRollup, HuntParams, HuntResult, LedgerClient, LedgerEntry, LifecycleRow,
-    RegisterWindow, RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, ToolUsage,
-    VerifyResult,
+    RegisterWindow, RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SpendAgentRow,
+    SpendRollup, ToolUsage, VerifyResult,
 };
 pub use brain::{
     BrainClient, ExplainPatternRequest, ExplainPatternResponse,

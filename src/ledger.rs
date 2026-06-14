@@ -434,6 +434,38 @@ pub struct HuntResult {
     pub to: Option<String>,
 }
 
+/// One agent's row in a [`SpendRollup`] — attributed spend over the
+/// window plus priced-coverage counts (FinOps P3 dashboard).
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SpendAgentRow {
+    pub agent_id: String,
+    #[serde(default)]
+    pub agent_name: Option<String>,
+    /// Summed `cost_micros` (micro-USD) over the window.
+    pub spend_micros: i64,
+    /// Rows this agent emitted in the window.
+    pub request_count: i64,
+    /// Of those, how many carried a priced (>0) estimate.
+    pub priced_count: i64,
+    #[serde(default)]
+    pub latest_ts: Option<String>,
+}
+
+/// Response from [`LedgerClient::finops_spend`] — per-agent attributed
+/// spend (top spenders first) plus fleet totals over the same window.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SpendRollup {
+    #[serde(default)]
+    pub window: Option<String>,
+    pub agents: Vec<SpendAgentRow>,
+    /// Fleet totals across every agent in the window (not just the
+    /// returned top-N) — honest priced coverage + fleet spend.
+    pub total_spend_micros: i64,
+    pub total_requests: i64,
+    pub total_priced: i64,
+    pub returned: i64,
+}
+
 /// One entry in an incident case's activity timeline.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CaseTimelineEvent {
@@ -798,6 +830,21 @@ impl LedgerClient {
         }
         if let Some(t) = params.to {
             path.push_str(&format!("&to={}", percent_encode(&t.to_rfc3339())));
+        }
+        self.get_json(&path).await
+    }
+
+    /// `GET /finops/spend?window=YYYY-MM&limit=N` — fleet attributed-
+    /// spend rollup (FinOps P3). `window` omitted → all-time. The server
+    /// clamps `limit` to [1, 1000].
+    pub async fn finops_spend(
+        &self,
+        window: Option<&str>,
+        limit: i64,
+    ) -> Result<SpendRollup, ClavenarError> {
+        let mut path = format!("finops/spend?limit={limit}");
+        if let Some(w) = window {
+            path.push_str(&format!("&window={}", percent_encode(w)));
         }
         self.get_json(&path).await
     }
