@@ -864,6 +864,25 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    /// `GET /audit/entry/{entry_id}/masked-params` — the PII-masked
+    /// canonical params archived for one entry, or `None` when nothing was
+    /// archived. The archive is opt-in (the Brain emits masked params only
+    /// under `CLAVENAR_BRAIN_EMIT_MASKED_PARAMS`) and lives outside the
+    /// hash chain, so `None` is the common, non-error shape — not a tamper
+    /// signal. Backs the console reconstruction view.
+    pub async fn masked_params_for_entry(
+        &self,
+        entry_id: &str,
+    ) -> Result<Option<serde_json::Value>, ClavenarError> {
+        #[derive(Deserialize)]
+        struct Wrap {
+            masked_params: Option<serde_json::Value>,
+        }
+        let path = format!("audit/entry/{}/masked-params", percent_encode(entry_id));
+        let w: Wrap = self.get_json(&path).await?;
+        Ok(w.masked_params)
+    }
+
     /// `GET /audit/replay/corpus` — Policy Lab replay corpus. Returns
     /// policy-decision rows in the time window whose stored
     /// `policy_decision` carries an `input_replay` block, with each
