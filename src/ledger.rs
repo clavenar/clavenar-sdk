@@ -387,6 +387,28 @@ pub struct EnvelopeAnalysis {
     pub used_tools: Vec<ToolUsage>,
 }
 
+/// One active-but-silent agent in [`SilentAgentsReport`].
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SilentAgent {
+    pub agent_name: String,
+    pub tenant: Option<String>,
+    /// Last genuine tool-traffic timestamp, or `None` if never seen.
+    pub last_activity: Option<String>,
+    pub enrolled_at: String,
+    pub silent_hours: i64,
+    pub never_active: bool,
+}
+
+/// Response from [`LedgerClient::silent_agents`] — the Shadow-Agent-Radar
+/// liveness read.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct SilentAgentsReport {
+    pub threshold_hours: i64,
+    pub generated_at: String,
+    pub silent_agents: Vec<SilentAgent>,
+    pub active_total: usize,
+}
+
 /// One tool's share of a window in [`BehavioralBaseline`].
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct ToolShare {
@@ -945,6 +967,18 @@ impl LedgerClient {
             baseline_days,
             recent_days,
         );
+        self.get_json(&path).await
+    }
+
+    /// `GET /analysis/silent-agents` — Shadow-Agent-Radar silence
+    /// watchdog. Lists enrolled, active agents whose tool traffic has
+    /// gone quiet past `since_hours` ("credential active, zero traffic").
+    /// Internal (mTLS) surface, like [`Self::envelope_analysis`].
+    pub async fn silent_agents(
+        &self,
+        since_hours: u32,
+    ) -> Result<SilentAgentsReport, ClavenarError> {
+        let path = format!("analysis/silent-agents?since_hours={}", since_hours);
         self.get_json(&path).await
     }
 
