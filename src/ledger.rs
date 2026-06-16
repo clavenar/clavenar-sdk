@@ -152,6 +152,14 @@ pub struct LedgerEntry {
     /// `clavenar_ledger::LedgerEntry::tool_params_sha256`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_params_sha256: Option<String>,
+    /// SHA-256 (hex) of the presented mTLS leaf cert's DER — the
+    /// credential generation that made the call. The proxy stamps it on
+    /// every verdict row and identity stamps the identical hash at SVID
+    /// issuance, so traffic attributes to a specific credential. Non-
+    /// hashable annotation; `None` on rows whose publisher captured no
+    /// cert. Mirrors `clavenar_ledger::LedgerEntry::credential_fingerprint`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_fingerprint: Option<String>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
