@@ -511,6 +511,63 @@ pub struct FleetBehavioralDiff {
     pub returned: i64,
 }
 
+/// One signal's share of a canary window's rejection-signal mix.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CanarySignalShare {
+    pub signal: String,
+    pub count: i64,
+}
+
+/// A Brain model identity attested in a canary window's on-chain evidence —
+/// the per-detector `provider:model` map plus the build version.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CanaryModel {
+    pub brain_version: String,
+    pub mock_mode: bool,
+    /// Detector → `provider:model`.
+    pub provider_models: std::collections::BTreeMap<String, String>,
+    pub observed: i64,
+}
+
+/// One side (before/after) of a model-upgrade canary comparison.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CanaryWindow {
+    pub since: String,
+    pub until: String,
+    pub total: i64,
+    pub authorized: i64,
+    pub denied: i64,
+    pub deny_rate: f64,
+    pub intent_mean: f64,
+    pub signal_mix: Vec<CanarySignalShare>,
+    pub models: Vec<CanaryModel>,
+    pub models_sampled: i64,
+}
+
+/// Signed `after − before` deltas across the canary cutover.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct CanaryDeltas {
+    pub deny_rate_delta: f64,
+    pub intent_mean_delta: f64,
+    pub total_delta: i64,
+    pub new_signals: Vec<String>,
+    pub vanished_signals: Vec<String>,
+}
+
+/// Response from [`LedgerClient::model_upgrade_canary`] — the before/after
+/// windows around a Brain model change, the behavioral deltas, and whether
+/// the dominant model identity flipped across the cutover.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ModelUpgradeCanary {
+    pub cutover: String,
+    pub window_hours: i64,
+    pub before: CanaryWindow,
+    pub after: CanaryWindow,
+    pub deltas: CanaryDeltas,
+    pub model_changed: bool,
+    pub insufficient: bool,
+}
+
 /// Filters for [`LedgerClient::hunt`]. All optional except `limit`; an
 /// empty `HuntParams { limit, ..Default::default() }` rolls up every
 /// agent active in the chain.
@@ -1005,6 +1062,25 @@ impl LedgerClient {
             "analysis/fleet-behavioral-diff?baseline_days={}&recent_days={}&limit={}",
             baseline_days, recent_days, limit,
         );
+        self.get_json(&path).await
+    }
+
+    /// `GET /analysis/model-upgrade-canary` — Temporal intelligence. Compares
+    /// fleet detector behavior in the window before a Brain model/provider
+    /// change against the window after (deny-rate, intent mean, rejection-
+    /// signal mix, and the model identity attested in each window's on-chain
+    /// evidence). `cutover` pins the upgrade instant; `None` defaults to
+    /// `now - window_hours` (prior-vs-recent). Internal (mTLS) surface, like
+    /// [`Self::fleet_behavioral_diff`].
+    pub async fn model_upgrade_canary(
+        &self,
+        cutover: Option<&str>,
+        window_hours: u32,
+    ) -> Result<ModelUpgradeCanary, ClavenarError> {
+        let mut path = format!("analysis/model-upgrade-canary?window_hours={}", window_hours);
+        if let Some(c) = cutover {
+            path.push_str(&format!("&cutover={}", percent_encode(c)));
+        }
         self.get_json(&path).await
     }
 
