@@ -310,6 +310,10 @@ pub struct GrantConsumption {
     pub not_before: Option<String>,
     pub not_after: Option<String>,
     pub exp: String,
+    /// Human-readable recurring-window summary (e.g. "Mon–Fri 09:00–17:00
+    /// UTC") when the grant carries a recurrence schedule; `None` otherwise.
+    #[serde(default)]
+    pub recurrence_summary: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
