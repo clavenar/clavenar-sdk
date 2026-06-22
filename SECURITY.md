@@ -26,8 +26,9 @@ In scope:
   under those repositories' GitHub releases.
 - The hash chain integrity properties documented in
   `clavenar-specs/README.md` and `clavenar-ledger/README.md`.
-- The cross-service wire contracts documented in `CLAUDE.md` (proxy →
-  brain / policy / hil / identity, identity → ledger via NATS).
+- The cross-service wire contracts documented in
+  `clavenar-specs/TECH_SPEC.md` (proxy → brain / policy / hil / identity,
+  identity → ledger via NATS).
 
 Out of scope:
 
