@@ -110,11 +110,16 @@ sequenceDiagram
 
 ## 2. `LedgerClient` — audit fetch and verify
 
-Six-endpoint read surface against `clavenar-ledger`. All paths
-funnel through `get_json` + `HttpProvider::client()`. The diagram
-shows the common operator workflow — pull a correlation join,
-page through an agent's history, run a chain verify — to surface
-the per-call hot-reload semantics.
+The widest surface in the SDK: ~31 methods against `clavenar-ledger`,
+spanning audit/correlation reads, the temporal-intelligence analytics
+family, regulatory + compliance exports, and the incident-case write
+family (`create_case`, `set_case_status`, `classify_case`, …). Reads
+funnel through `get_json` (200-only); writes through `post_json` (any
+2xx, empty body → `()`); both snapshot `HttpProvider::client()` per
+request. The full per-method route table lives in
+[`ENDPOINTS.md`](./ENDPOINTS.md). The diagram shows the common operator
+workflow — pull a correlation join, page through an agent's history, run
+a chain verify — to surface the per-call hot-reload semantics.
 
 ```mermaid
 sequenceDiagram
@@ -441,24 +446,23 @@ flowchart LR
 
 ## Source pointers
 
+The exhaustive per-method route → return-type table lives in
+[`ENDPOINTS.md`](./ENDPOINTS.md), kept in sync with source. The
+pointers below name the owning modules plus the non-route symbols the
+diagrams above lean on.
+
 - Proxy hot path: `src/client.rs::ClavenarClient` (`builder`,
   `call_tool`, `send_jsonrpc`, `send_raw`, `parse_veto`)
 - Auth + non-exhaustive enum: `src/client.rs::Auth`
-- Ledger reads: `src/ledger.rs::LedgerClient`
-  (`audit_correlation`, `audit_agent`, `audit_agent_paged`,
-  `audit_agent_count`, `verify`, `list_exports`,
-  `replay_corpus`, `regulatory_export`)
-- Agent lifecycle: `src/agents.rs::AgentsClient` (`list`, `get`,
-  `find_by_name`, `create`, `suspend`, `unsuspend`,
-  `decommission`, `envelope_narrow`, `envelope_widen`,
-  `attestation_kinds`, `transfer_owner_team`, `set_description`)
+- Ledger client: `src/ledger.rs::LedgerClient` (audit/correlation
+  reads, the analytics family, regulatory/compliance exports, and the
+  incident-case writes — full list in `ENDPOINTS.md`)
+- Agent lifecycle: `src/agents.rs::AgentsClient`; idempotency helper
+  `create_request_matches`; migration constant
+  `MIGRATION_ACTOR_SUB_PREFIX`
 - Policy management: `src/policies.rs::PoliciesClient`
-  (`list`, `get`, `list_versions`, `get_version`, `diff`,
-  `create`, `update`, `activate`, `deactivate`, `delete`,
-  `rollback`, `evaluate_batch`, `mine`, `list_templates`,
-  `get_template`, `install_template`, `lab_template`)
 - Typed error lifters: `src/policies.rs::parse_batch_error`,
-  `parse_mine_error`
+  `parse_mine_error`, and `PoliciesClient::parse_conflict`
 - Brain explain-pattern: `src/brain.rs::BrainClient::explain_pattern`
 - Simulator control: `src/sim.rs::SimClient`
 - HTTP plumbing: `src/http.rs` (`HttpProvider`,
