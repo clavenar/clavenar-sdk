@@ -122,6 +122,17 @@ pub struct TenantBudget {
     pub updated_by: Option<String>,
 }
 
+/// Outcome of a tenant offboard (Phase 7). Mirror of
+/// `clavenar-identity::agents::offboard::OffboardResponse` — what the
+/// identity side did before the console proceeds to the ledger tombstone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TenantOffboardResult {
+    pub tenant: String,
+    pub agents_decommissioned: u64,
+    pub upstreams_retired: u64,
+    pub budget_cleared: bool,
+}
+
 /// One agent-targeted gauntlet case recorded on a certificate. Mirror of
 /// `clavenar-identity::agents::lifecycle::CertificationCase`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -659,6 +670,23 @@ impl AgentsClient {
         self.post_json(url, &body).await
     }
 
+    /// `POST /tenants/{tenant}/offboard` — decommission every agent in a
+    /// tenant (with revocation broadcast), retire its upstreams, clear
+    /// its budget, and emit a `tenant.offboarded` chain marker. Requires
+    /// the `tenant:offboard` capability. `confirm` must equal `tenant`
+    /// (server-side echo of the type-the-name guard). The audit-row
+    /// tombstone is a separate ledger call the console makes after this.
+    pub async fn offboard_tenant(
+        &self,
+        tenant: &str,
+        confirm: &str,
+        reason: Option<&str>,
+    ) -> Result<TenantOffboardResult, ClavenarError> {
+        let url = self.join(&format!("tenants/{}/offboard", percent_encode(tenant)))?;
+        let body = serde_json::json!({ "confirm": confirm, "reason": reason });
+        self.post_json(url, &body).await
+    }
+
     /// Build a URL of the form `agents/{id}/<verb>?tenant=<t>`. The
     /// `verb` is appended verbatim — callers pass it as a constant
     /// (`"suspend"`, `"envelope/narrow"`, …) so the path-segment
@@ -878,6 +906,21 @@ mod tests {
         .unwrap();
         assert_eq!(set.budget_micros, Some(50_000_000));
         assert_eq!(set.updated_by.as_deref(), Some("user:boss@acme"));
+    }
+
+    #[test]
+    fn tenant_offboard_result_matches_server_wire_shape() {
+        let r: TenantOffboardResult = serde_json::from_value(json!({
+            "tenant": "acme",
+            "agents_decommissioned": 3,
+            "upstreams_retired": 1,
+            "budget_cleared": true,
+        }))
+        .unwrap();
+        assert_eq!(r.tenant, "acme");
+        assert_eq!(r.agents_decommissioned, 3);
+        assert_eq!(r.upstreams_retired, 1);
+        assert!(r.budget_cleared);
     }
 
     #[tokio::test]
