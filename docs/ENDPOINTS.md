@@ -61,7 +61,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `fleet_behavioral_diff(baseline_days, recent_days, limit)` | `GET /analysis/fleet-behavioral-diff?baseline_days=&recent_days=&limit=` | `FleetBehavioralDiff` |
 | `model_upgrade_canary(cutover, window_hours)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=]` | `ModelUpgradeCanary` |
 | `hunt(params)` | `GET /audit/hunt?limit=[&method=&signal=&authorized=&from=&to=]` | `HuntResult` |
-| `finops_spend(window, limit)` | `GET /finops/spend?limit=[&window=]` | `SpendRollup` |
+| `finops_spend(window, tenant, limit)` | `GET /finops/spend?limit=[&window=&tenant=]` | `SpendRollup` (`tenant` `None` → deployment-wide rollup) |
 | `compliance_evidence(from, to)` | `POST /compliance/evidence?from=&to=` | `ComplianceRegister` |
 | `regulatory_export(from, to, opts)` | `POST /export/regulatory?from=&to=[&include_exports=true][&include_compliance=true]` | `Vec<u8>` (raw `.tar.gz` bytes) |
 | `create_case(title, agent_ids, correlation_ids, actor)` | `POST /cases` | `CaseRecord` |
@@ -71,6 +71,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `set_case_status(id, status)` | `POST /cases/{id}/status` | `()` |
 | `classify_case(id, severity)` | `POST /cases/{id}/classify` | `(String, String)` — `(severity, regulatory_deadline)` |
 | `attach_case(id, agent_ids, correlation_ids)` | `POST /cases/{id}/attach` | `()` |
+| `tombstone_tenant(tenant, reason)` | `POST /admin/tenants/{tenant}/tombstone` | `i64` (rows tombstoned; unwraps `{ tombstoned }`) |
 
 No bearer. `get_json` accepts only `200` (else `Server`); `post_json`
 accepts any 2xx and treats an empty body as `()` via a `null` fallback;
@@ -100,6 +101,9 @@ RFC 3339.
 | `transfer_owner_team(id, tenant, new_team)` | `POST /agents/{id}/owner-team?tenant=` | `AgentRecord` |
 | `record_certification(id, tenant, req)` | `POST /agents/{id}/certification?tenant=` | `SignedCertificate` |
 | `set_description(id, tenant, text)` | `POST /agents/{id}/description?tenant=` | `AgentRecord` |
+| `get_budget(tenant)` | `GET /tenants/{tenant}/budget` | `TenantBudget` (per-tenant monthly micro-USD ceiling; `budget_micros` `None` when unset) |
+| `set_budget(tenant, budget_micros)` | `POST /tenants/{tenant}/budget` | `TenantBudget` |
+| `offboard_tenant(tenant, confirm, reason)` | `POST /tenants/{tenant}/offboard` | `TenantOffboardResult` (`confirm` must equal `tenant`) |
 
 Sends `Authorization: Bearer` when set via `with_bearer`; decodes via
 `decode_response` (`create` returns `201`). `get`/`list` elide

@@ -128,6 +128,17 @@ let created = agents.create(&CreateAgentRequest {
 agents.suspend(&created.record.id, "acme", Some("incident #4172")).await?;
 ```
 
+`AgentsClient` also carries the per-tenant operator surface:
+`get_budget` / `set_budget` read and set a tenant's monthly micro-USD
+spend ceiling (`TenantBudget`), and `offboard_tenant(tenant, confirm,
+reason)` decommissions every agent in a tenant (`confirm` must equal the
+tenant name). The matching audit-row erase is a separate
+`LedgerClient::tombstone_tenant(tenant, reason)` call the console makes
+after the identity offboard — ledger reads need no change, tombstone
+filtering is server-side and transparent. `LedgerClient::finops_spend`
+takes a `tenant` argument to scope the spend rollup to one operator
+tenant (`None` keeps the deployment-wide rollup).
+
 `PoliciesClient` wraps `clavenar-policy-engine`'s
 console-policy-management surface (list / get / create / update /
 activate / deactivate / delete / rollback / diff). 409s on mutations
