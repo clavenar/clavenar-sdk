@@ -1349,6 +1349,30 @@ impl LedgerClient {
         .await
     }
 
+    /// `POST /admin/tenants/{tenant}/tombstone` — logically erase a
+    /// tenant's audit rows (Phase 7 offboarding). Sets `deleted_at` on
+    /// every live row whose `tenant` matches, hiding them from all reads
+    /// while leaving the hash chain (and `/verify`) intact. Returns the
+    /// number of rows newly tombstoned. Internal/mTLS-gated server-side;
+    /// the console calls it after the identity offboard. Idempotent.
+    pub async fn tombstone_tenant(
+        &self,
+        tenant: &str,
+        reason: Option<&str>,
+    ) -> Result<i64, ClavenarError> {
+        #[derive(serde::Deserialize)]
+        struct Resp {
+            tombstoned: i64,
+        }
+        let r: Resp = self
+            .post_json(
+                &format!("admin/tenants/{}/tombstone", percent_encode(tenant)),
+                &serde_json::json!({ "reason": reason }),
+            )
+            .await?;
+        Ok(r.tombstoned)
+    }
+
     /// Internal: POST `<base_url>/<path>` with a JSON body, decode the
     /// JSON response on any 2xx (a 204 No Content decodes as `()` via an
     /// empty-body→`null` fallback); `Server { status, body }` otherwise.
