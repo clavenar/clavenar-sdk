@@ -442,6 +442,12 @@ pub struct PoliciesClient {
     base_url: Url,
     http: Arc<dyn HttpProvider>,
     bearer: Option<String>,
+    /// When set, every CRUD call carries `?tenant=<prefix>` so the
+    /// policy engine reads/writes the named tenant's editable namespace
+    /// (list/get also surface the read-only protected base). The console
+    /// pins this from a demo visitor's session cookie — never a client-
+    /// supplied value — so a demo edit can only touch its own tenant.
+    tenant: Option<String>,
 }
 
 /// Body for [`PoliciesClient::validate`].
@@ -470,6 +476,7 @@ impl PoliciesClient {
             base_url: url,
             http,
             bearer: None,
+            tenant: None,
         })
     }
 
@@ -487,6 +494,41 @@ impl PoliciesClient {
     pub fn with_bearer(mut self, token: impl Into<String>) -> Self {
         self.bearer = Some(token.into());
         self
+    }
+
+    /// Return a tenant-scoped view of this client: every subsequent CRUD
+    /// call carries `?tenant=<prefix>`. Cheap clone (all inner state is
+    /// `Arc` / small). Pass the demo visitor's cookie-derived prefix —
+    /// never a client-supplied tenant.
+    pub fn with_tenant(mut self, tenant: Option<String>) -> Self {
+        self.tenant = tenant;
+        self
+    }
+
+    /// `POST /policies/tenant/{prefix}/provision` — idempotently create a
+    /// tenant's editable copy of the active policy set. Called best-effort
+    /// at demo-session exchange; safe to call repeatedly. Does NOT carry
+    /// the `?tenant=` query (the prefix is in the path).
+    pub async fn provision_tenant(&self, prefix: &str) -> Result<(), ClavenarError> {
+        let url = self
+            .base_url
+            .join(&format!(
+                "policies/tenant/{}/provision",
+                percent_encode(prefix)
+            ))
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join provision: {e}")))?;
+        let mut req = self.http.client().post(url);
+        if let Some(token) = self.bearer.as_ref() {
+            req = req.bearer_auth(token);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if status.is_success() {
+            Ok(())
+        } else {
+            let body = resp.text().await.unwrap_or_default();
+            Err(ClavenarError::Server { status, body })
+        }
     }
 
     pub fn base_url(&self) -> &Url {
@@ -792,9 +834,16 @@ impl PoliciesClient {
     // ── Internal helpers ─────────────────────────────────────────
 
     fn join(&self, suffix: &str) -> Result<Url, ClavenarError> {
-        self.base_url
+        let mut url = self
+            .base_url
             .join(suffix)
-            .map_err(|e| ClavenarError::InvalidConfig(format!("join {suffix}: {e}")))
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join {suffix}: {e}")))?;
+        // Single Url-construction chokepoint, so a tenant-scoped client
+        // stamps `?tenant=` on every CRUD call without per-method churn.
+        if let Some(tenant) = self.tenant.as_deref() {
+            url.query_pairs_mut().append_pair("tenant", tenant);
+        }
+        Ok(url)
     }
 
     async fn get_json<T: serde::de::DeserializeOwned>(
@@ -839,6 +888,18 @@ mod tests {
             Err(ClavenarError::InvalidConfig(_)) => {}
             Err(other) => panic!("unexpected error: {other}"),
         }
+    }
+
+    #[test]
+    fn with_tenant_stamps_query_on_every_call() {
+        let c = PoliciesClient::new("http://localhost:8082")
+            .unwrap()
+            .with_tenant(Some("deadbeef".into()));
+        let url = c.join("policies/phi.rego").unwrap();
+        assert_eq!(url.query(), Some("tenant=deadbeef"));
+        // An untenanted client adds nothing.
+        let c2 = PoliciesClient::new("http://localhost:8082").unwrap();
+        assert!(c2.join("policies").unwrap().query().is_none());
     }
 
     #[test]
