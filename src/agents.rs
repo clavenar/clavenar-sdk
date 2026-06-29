@@ -107,6 +107,21 @@ pub struct AgentRecord {
     pub certified_at: Option<String>,
 }
 
+/// A tenant's monthly spend budget (Phase 6). Mirror of
+/// `clavenar-identity::agents::budget::TenantBudget`. `budget_micros` /
+/// `updated_*` are `None` when no budget is configured for the tenant —
+/// the proxy quota gate reads that absence as "no enforcement".
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TenantBudget {
+    pub tenant: String,
+    #[serde(default)]
+    pub budget_micros: Option<i64>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub updated_by: Option<String>,
+}
+
 /// One agent-targeted gauntlet case recorded on a certificate. Mirror of
 /// `clavenar-identity::agents::lifecycle::CertificationCase`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -623,6 +638,27 @@ impl AgentsClient {
         self.post_json(url, &body).await
     }
 
+    /// `GET /tenants/{tenant}/budget` — read a tenant's monthly spend
+    /// budget. Allowlist-only server-side; a tenant with no budget set
+    /// returns `budget_micros: None` (not an error).
+    pub async fn get_budget(&self, tenant: &str) -> Result<TenantBudget, ClavenarError> {
+        let url = self.join(&format!("tenants/{}/budget", percent_encode(tenant)))?;
+        self.get_json(url).await
+    }
+
+    /// `POST /tenants/{tenant}/budget` — set a tenant's monthly spend
+    /// budget (micro-USD). Requires the `agents:admin` capability. `0`
+    /// freezes the tenant; a negative value is rejected server-side.
+    pub async fn set_budget(
+        &self,
+        tenant: &str,
+        budget_micros: i64,
+    ) -> Result<TenantBudget, ClavenarError> {
+        let url = self.join(&format!("tenants/{}/budget", percent_encode(tenant)))?;
+        let body = serde_json::json!({ "budget_micros": budget_micros });
+        self.post_json(url, &body).await
+    }
+
     /// Build a URL of the form `agents/{id}/<verb>?tenant=<t>`. The
     /// `verb` is appended verbatim — callers pass it as a constant
     /// (`"suspend"`, `"envelope/narrow"`, …) so the path-segment
@@ -822,6 +858,26 @@ mod tests {
             certified_at_version: None,
             certified_at: None,
         }
+    }
+
+    #[test]
+    fn tenant_budget_matches_server_wire_shape() {
+        // Unset tenant: identity skip-serializes the None fields, so the
+        // SDK must read absence as None (not error).
+        let unset: TenantBudget = serde_json::from_value(json!({ "tenant": "acme" })).unwrap();
+        assert_eq!(unset.budget_micros, None);
+        assert_eq!(unset.updated_by, None);
+
+        // Set tenant: every field present.
+        let set: TenantBudget = serde_json::from_value(json!({
+            "tenant": "acme",
+            "budget_micros": 50_000_000,
+            "updated_at": "2026-06-29T00:00:00+00:00",
+            "updated_by": "user:boss@acme",
+        }))
+        .unwrap();
+        assert_eq!(set.budget_micros, Some(50_000_000));
+        assert_eq!(set.updated_by.as_deref(), Some("user:boss@acme"));
     }
 
     #[tokio::test]
