@@ -1118,17 +1118,23 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
-    /// `GET /finops/spend?window=YYYY-MM&limit=N` — fleet attributed-
-    /// spend rollup (FinOps P3). `window` omitted → all-time. The server
-    /// clamps `limit` to [1, 1000].
+    /// `GET /finops/spend?window=YYYY-MM&tenant=<t>&limit=N` — attributed-
+    /// spend rollup (FinOps P3). `window` omitted → all-time. `tenant`
+    /// omitted → the whole deployment; `Some` scopes to one operator
+    /// tenant (per-tenant billing/quota). The server clamps `limit` to
+    /// [1, 1000].
     pub async fn finops_spend(
         &self,
         window: Option<&str>,
+        tenant: Option<&str>,
         limit: i64,
     ) -> Result<SpendRollup, ClavenarError> {
         let mut path = format!("finops/spend?limit={limit}");
         if let Some(w) = window {
             path.push_str(&format!("&window={}", percent_encode(w)));
+        }
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
         }
         self.get_json(&path).await
     }
