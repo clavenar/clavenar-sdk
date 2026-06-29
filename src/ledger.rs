@@ -278,13 +278,19 @@ pub struct ReplayCorpus {
 }
 
 /// Per-call params for [`LedgerClient::replay_corpus`]. Required:
-/// `since`, `limit`. Optional: `until`, `agent_id`, `tool_type`.
+/// `since`, `limit`. Optional: `until`, `agent_id`, `tool_type`,
+/// `tenant_prefix`.
 #[derive(Debug, Clone, Default)]
 pub struct ReplayCorpusParams {
     pub since: chrono::DateTime<chrono::Utc>,
     pub until: Option<chrono::DateTime<chrono::Utc>>,
     pub agent_id: Option<String>,
     pub tool_type: Option<String>,
+    /// Scope the corpus to one demo tenant: only rows whose
+    /// `correlation_id`'s leading UUID group equals this 8-hex prefix.
+    /// The console pins this from the visitor's session cookie so a demo
+    /// Policy Lab / topology read never replays another tenant's traffic.
+    pub tenant_prefix: Option<String>,
     pub limit: i64,
 }
 
@@ -995,6 +1001,9 @@ impl LedgerClient {
         }
         if let Some(t) = params.tool_type.as_deref() {
             path.push_str(&format!("&tool_type={}", percent_encode(t)));
+        }
+        if let Some(tp) = params.tenant_prefix.as_deref() {
+            path.push_str(&format!("&tenant_prefix={}", percent_encode(tp)));
         }
         self.get_json(&path).await
     }
