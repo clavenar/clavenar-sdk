@@ -68,7 +68,8 @@ pub use ledger::{
     CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord, CaseTimelineEvent,
     ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry, EnvelopeAnalysis,
     EvidenceStatus, ExportRecord, FleetBehavioralDiff, FleetDiffRow, HuntAgentRollup, HuntParams,
-    HuntResult, LedgerClient, LedgerEntry, LifecycleRow, ModelUpgradeCanary, RegisterWindow,
+    HuntResult, LedgerClient, LedgerEntry, LogEntry, LogReceipt, LifecycleRow, ModelUpgradeCanary,
+    RegisterWindow,
     RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SilentAgent, SilentAgentsReport,
     SpendAgentRow, SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
 };
