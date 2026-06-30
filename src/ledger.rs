@@ -372,6 +372,37 @@ pub struct ComplianceRegister {
     pub disclaimer: String,
 }
 
+/// Append payload for `POST /log` — the subset of the ledger's
+/// `LogRequest` a non-proxy caller fills. The server defaults every
+/// other field (chain version, signature, lifecycle columns) and
+/// computes the hash chain, so a synthetic-traffic source need only
+/// describe the logical decision. `policy_decision` is always
+/// serialized (the server requires the field present) — pass
+/// `Some(Value::Null)` rather than `None` if there is genuinely no
+/// policy context.
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    pub agent_id: String,
+    pub method: String,
+    pub intent_category: String,
+    pub authorized: bool,
+    pub reasoning: String,
+    pub policy_decision: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+}
+
+/// Receipt the ledger returns from `POST /log`: the chain position the
+/// row landed at and its computed entry hash.
+#[derive(Debug, Clone, Deserialize)]
+pub struct LogReceipt {
+    pub status: String,
+    pub seq: i64,
+    pub entry_hash: String,
+}
+
 /// Async client for the ledger HTTP surface.
 ///
 /// Cheap to clone — the inner `Arc<dyn HttpProvider>` is `Arc`-based.
@@ -1311,6 +1342,13 @@ impl LedgerClient {
             &serde_json::json!({ "status": status }),
         )
         .await
+    }
+
+    /// `POST /log` — append a forensic entry. The ledger computes the
+    /// hash chain and returns the row's chain position + entry hash.
+    /// Reaches the same internal mTLS router as the `audit_*` reads.
+    pub async fn log(&self, entry: &LogEntry) -> Result<LogReceipt, ClavenarError> {
+        self.post_json("log", entry).await
     }
 
     /// `POST /cases/{id}/classify` — set the EU AI Act Art 73 severity
