@@ -160,6 +160,14 @@ pub struct LedgerEntry {
     /// cert. Mirrors `clavenar_ledger::LedgerEntry::credential_fingerprint`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_fingerprint: Option<String>,
+    /// Concrete MCP tool the verdict gated — `params.name` (e.g.
+    /// `marketing.bulk_email`), distinct from `method` (the JSON-RPC
+    /// envelope `call_tool`). Lets `/audit` surface *which tool* an agent
+    /// invoked. Non-hashable annotation; `None` on rows whose publisher
+    /// captured no tool name. Mirrors
+    /// `clavenar_ledger::LedgerEntry::tool_name`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_name: Option<String>,
 }
 
 /// Lifecycle row + the per-event-kind payload bytes that the chain
