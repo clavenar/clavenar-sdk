@@ -281,6 +281,28 @@ pub struct LifecycleResponse {
     pub state_changed_at: String,
 }
 
+/// Active force-HIL containment flag on an agent — the soft tier of
+/// deep-review's closed loop (clavenar-specs/TECH_SPEC.md
+/// #forensic-tier-deep-review §11). Mirrors identity's wire shape.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ForceHilFlag {
+    pub expires_at: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub correlation_id: Option<String>,
+    pub applied_at: String,
+    pub actor: String,
+}
+
+/// Response shape for `GET /agents/{id}/containment` and
+/// `POST /agents/{id}/containment/clear`. `force_hil` is `None` when
+/// no unexpired flag is set (clear always returns `None`).
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct ContainmentStatus {
+    pub force_hil: Option<ForceHilFlag>,
+}
+
 /// Compare a [`CreateAgentRequest`] against an existing
 /// [`AgentRecord`] for the `clavenarctl agents create --if-absent`
 /// idempotency check. Returns `true` when the request would land the
@@ -573,6 +595,31 @@ impl AgentsClient {
         reason: Option<&str>,
     ) -> Result<LifecycleResponse, ClavenarError> {
         self.lifecycle_call(id, tenant, "decommission", reason).await
+    }
+
+    /// `GET /agents/{id}/containment` — the agent's active force-HIL
+    /// containment flag, if any (deep-review §11).
+    pub async fn containment(
+        &self,
+        id: &str,
+        tenant: &str,
+    ) -> Result<ContainmentStatus, ClavenarError> {
+        let url = self.id_with_tenant(id, "containment", tenant)?;
+        self.get_json(url).await
+    }
+
+    /// `POST /agents/{id}/containment/clear` — operator early-clear of
+    /// the force-HIL flag. Admin only; a 200 with `force_hil: None`
+    /// comes back whether or not a flag was active.
+    pub async fn clear_containment(
+        &self,
+        id: &str,
+        tenant: &str,
+        reason: Option<&str>,
+    ) -> Result<ContainmentStatus, ClavenarError> {
+        let url = self.id_with_tenant(id, "containment/clear", tenant)?;
+        let body = LifecycleRequest { reason };
+        self.post_json(url, &body).await
     }
 
     /// `POST /agents/{id}/envelope/narrow`. Caller passes the *full
@@ -1716,5 +1763,68 @@ mod tests {
             actor_sub: None,
         };
         assert!(!create_request_matches(&req, &record));
+    }
+
+    #[tokio::test]
+    async fn containment_get_and_clear_round_trip() {
+        use axum::routing::post;
+        let app = Router::new()
+            .route(
+                "/agents/{id}/containment",
+                get(
+                    |Path(id): Path<String>,
+                     Query(params): Query<std::collections::HashMap<String, String>>| async move {
+                        assert_eq!(id, "agent-1");
+                        assert_eq!(params.get("tenant").map(String::as_str), Some("acme"));
+                        Json(json!({
+                            "force_hil": {
+                                "expires_at": "2026-07-03T13:00:00Z",
+                                "reason": "deep-review Red finding: exfil",
+                                "correlation_id": "abc-123",
+                                "applied_at": "2026-07-03T12:30:00Z",
+                                "actor": "deep-review",
+                            }
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/agents/{id}/containment/clear",
+                post(
+                    |Path(id): Path<String>,
+                     Query(params): Query<std::collections::HashMap<String, String>>,
+                     Json(body): Json<serde_json::Value>| async move {
+                        assert_eq!(id, "agent-1");
+                        assert_eq!(params.get("tenant").map(String::as_str), Some("acme"));
+                        assert_eq!(body["reason"], "false positive");
+                        Json(json!({"force_hil": null}))
+                    },
+                ),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = shutdown_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = AgentsClient::new(format!("http://{addr}/")).unwrap();
+        let status = client.containment("agent-1", "acme").await.unwrap();
+        let flag = status.force_hil.expect("flag expected");
+        assert_eq!(flag.expires_at, "2026-07-03T13:00:00Z");
+        assert_eq!(flag.correlation_id.as_deref(), Some("abc-123"));
+        assert_eq!(flag.actor, "deep-review");
+
+        let cleared = client
+            .clear_containment("agent-1", "acme", Some("false positive"))
+            .await
+            .unwrap();
+        assert!(cleared.force_hil.is_none());
+        let _ = shutdown_tx.send(());
     }
 }
