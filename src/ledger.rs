@@ -336,6 +336,17 @@ pub struct RegulatoryExportOptions {
     pub include_compliance: bool,
 }
 
+/// Optional tenant scope for [`LedgerClient::compliance_evidence_scoped`].
+#[derive(Debug, Clone, Default)]
+pub struct ComplianceEvidenceScope {
+    /// Demo-session JWT. When set, the ledger verifies it and scopes
+    /// evidence rows to the token's correlation-id prefix.
+    pub demo_session_token: Option<String>,
+    /// Authenticated-operator tenant. Used only when no demo-session
+    /// token is present.
+    pub tenant: Option<String>,
+}
+
 /// Whether a control's evidence is fully present, partial, or absent for
 /// the window. Mirror of the ledger's `compliance::EvidenceStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1438,13 +1449,33 @@ impl LedgerClient {
         from: &chrono::DateTime<chrono::Utc>,
         to: &chrono::DateTime<chrono::Utc>,
     ) -> Result<ComplianceRegister, ClavenarError> {
+        self.compliance_evidence_scoped(from, to, ComplianceEvidenceScope::default())
+            .await
+    }
+
+    /// Scoped variant of [`Self::compliance_evidence`]. The console uses
+    /// this to keep demo visitors and tenant-authenticated operators on
+    /// their own evidence rows while preserving the legacy unscoped call
+    /// for single-tenant deployments.
+    pub async fn compliance_evidence_scoped(
+        &self,
+        from: &chrono::DateTime<chrono::Utc>,
+        to: &chrono::DateTime<chrono::Utc>,
+        scope: ComplianceEvidenceScope,
+    ) -> Result<ComplianceRegister, ClavenarError> {
         let from_str = from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let to_str = to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-        let path = format!(
+        let mut path = format!(
             "compliance/evidence?from={}&to={}",
             percent_encode(&from_str),
             percent_encode(&to_str),
         );
+        if let Some(token) = scope.demo_session_token.as_deref() {
+            path.push_str(&format!("&demo_session_token={}", percent_encode(token)));
+        }
+        if let Some(tenant) = scope.tenant.as_deref() {
+            path.push_str(&format!("&tenant={}", percent_encode(tenant)));
+        }
         let endpoint = self
             .base_url
             .join(&path)
@@ -2314,6 +2345,76 @@ mod tests {
         assert_eq!(register.controls.len(), 1);
         assert_eq!(register.controls[0].status, EvidenceStatus::Satisfied);
         assert_eq!(register.controls[0].metric["total_requests"], 2);
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn compliance_evidence_scoped_threads_scope_query_params() {
+        use axum::extract::Query;
+        use axum::http::StatusCode;
+        use axum::{Json, Router, routing::post};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::oneshot;
+
+        let captured: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let captured_for_handler = captured.clone();
+        let app = Router::new().route(
+            "/compliance/evidence",
+            post(move |Query(q): Query<HashMap<String, String>>| {
+                let captured_for_handler = captured_for_handler.clone();
+                async move {
+                    *captured_for_handler.lock().unwrap() = q;
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({
+                            "schema_version": "1",
+                            "generated_at": "2026-01-01T00:00:00Z",
+                            "window": { "from": "2026-01-01T00:00:00Z", "to": "2026-01-02T00:00:00Z" },
+                            "row_count": 0,
+                            "chain_verify": { "valid": true, "entries_checked": 0, "first_invalid_seq": null },
+                            "controls": [],
+                            "disclaimer": "projection of logged facts"
+                        })),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
+        let _ = client
+            .compliance_evidence_scoped(
+                &from,
+                &to,
+                ComplianceEvidenceScope {
+                    demo_session_token: Some("jwt.with/slash".into()),
+                    tenant: Some("acme".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        let q = captured.lock().unwrap();
+        assert!(q.get("from").is_some_and(|v| v.starts_with("2023-")));
+        assert!(q.get("to").is_some_and(|v| v.starts_with("2023-")));
+        assert_eq!(
+            q.get("demo_session_token").map(String::as_str),
+            Some("jwt.with/slash")
+        );
+        assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
         let _ = kill_tx.send(());
     }
 }

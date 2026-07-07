@@ -68,12 +68,12 @@ pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
     AnchorSummary, AuditFilterParams, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline,
     CanaryDeltas, CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord,
-    CaseTimelineEvent, ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry,
-    EnvelopeAnalysis, EvidenceStatus, ExportOutcome, ExportRecord, FleetBehavioralDiff,
-    FleetDiffRow, HuntAgentRollup, HuntParams, HuntResult, LedgerClient, LedgerEntry, LifecycleRow,
-    LogEntry, LogReceipt, ModelUpgradeCanary, RegisterWindow, RegulatoryExportOptions,
-    ReplayCorpus, ReplayCorpusParams, SilentAgent, SilentAgentsReport, SpendAgentRow, SpendRollup,
-    ToolShare, ToolUsage, VerifyResult, WindowDiff,
+    CaseTimelineEvent, ChainVerifySummary, ComplianceEvidenceScope, ComplianceRegister,
+    ControlEvidence, CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportOutcome, ExportRecord,
+    FleetBehavioralDiff, FleetDiffRow, HuntAgentRollup, HuntParams, HuntResult, LedgerClient,
+    LedgerEntry, LifecycleRow, LogEntry, LogReceipt, ModelUpgradeCanary, RegisterWindow,
+    RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SilentAgent, SilentAgentsReport,
+    SpendAgentRow, SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
 };
 pub use pack::{
     PACK_AUDIENCE, PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,
