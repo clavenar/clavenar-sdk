@@ -655,6 +655,9 @@ pub struct HuntAgentRollup {
     pub worst_signal: Option<String>,
     /// Newest matching row's RFC 3339 timestamp.
     pub latest_hit_ts: String,
+    /// Correlation id from the newest matching row for this agent.
+    #[serde(default)]
+    pub latest_correlation_id: Option<String>,
     /// Distinct methods this agent invoked in the window.
     #[serde(default)]
     pub methods: Vec<String>,

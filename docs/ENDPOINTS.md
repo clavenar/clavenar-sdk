@@ -73,6 +73,10 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `attach_case(id, agent_ids, correlation_ids)` | `POST /cases/{id}/attach` | `()` |
 | `tombstone_tenant(tenant, reason)` | `POST /admin/tenants/{tenant}/tombstone` | `i64` (rows tombstoned; unwraps `{ tombstoned }`) |
 
+`HuntResult.agents[]` includes `latest_correlation_id` when the newest
+matching ledger row for that agent carried a correlation ID. Clients can use
+it to seed incident cases from the rollup without fetching every row first.
+
 No bearer. `get_json` accepts only `200` (else `Server`); `post_json`
 accepts any 2xx and treats an empty body as `()` via a `null` fallback;
 `regulatory_export` streams raw bytes on 2xx and maps non-2xx to
