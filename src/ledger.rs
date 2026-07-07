@@ -630,6 +630,9 @@ pub struct HuntParams {
     pub to: Option<chrono::DateTime<chrono::Utc>>,
     /// Max agent rows returned. Server-clamps to [1, 1000].
     pub limit: i64,
+    /// Demo-session JWT. When set, the ledger scopes rows to the token's
+    /// prefix before grouping by agent.
+    pub demo_session_token: Option<String>,
 }
 
 /// One agent's roll-up row in a [`HuntResult`].
@@ -1153,6 +1156,12 @@ impl LedgerClient {
         }
         if let Some(t) = params.to {
             path.push_str(&format!("&to={}", percent_encode(&t.to_rfc3339())));
+        }
+        if let Some(token) = params.demo_session_token.as_deref() {
+            path.push_str(&format!(
+                "&demo_session_token={}",
+                percent_encode(token)
+            ));
         }
         self.get_json(&path).await
     }
@@ -1853,6 +1862,67 @@ mod tests {
         assert_eq!(rows[0].entry.event_kind.as_deref(), Some("agent.registered"));
         assert_eq!(rows[1].entry.event_kind.as_deref(), Some("agent.suspended"));
         assert_eq!(rows[1].payload.as_ref().unwrap()["state_after"], "suspended");
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn hunt_threads_demo_session_token_query_param() {
+        use axum::{extract::Query, routing::get, Router};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::oneshot;
+
+        let captured: Arc<Mutex<HashMap<String, String>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let captured_for_handler = captured.clone();
+
+        let app = Router::new().route(
+            "/audit/hunt",
+            get(move |Query(q): Query<HashMap<String, String>>| {
+                let captured_for_handler = captured_for_handler.clone();
+                async move {
+                    *captured_for_handler.lock().unwrap() = q;
+                    axum::Json(serde_json::json!({
+                        "agents": [],
+                        "returned": 0
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let result = client
+            .hunt(HuntParams {
+                limit: 200,
+                signal: Some("egress_violation".into()),
+                demo_session_token: Some("jwt.with/slash".into()),
+                ..Default::default()
+            })
+            .await
+            .unwrap();
+
+        assert!(result.agents.is_empty());
+        let q = captured.lock().unwrap();
+        assert_eq!(q.get("limit").map(String::as_str), Some("200"));
+        assert_eq!(
+            q.get("signal").map(String::as_str),
+            Some("egress_violation")
+        );
+        assert_eq!(
+            q.get("demo_session_token").map(String::as_str),
+            Some("jwt.with/slash")
+        );
         let _ = kill_tx.send(());
     }
 
