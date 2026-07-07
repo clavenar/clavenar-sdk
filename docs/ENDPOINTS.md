@@ -60,7 +60,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `silent_agents(since_hours)` | `GET /analysis/silent-agents?since_hours=` | `SilentAgentsReport` |
 | `fleet_behavioral_diff(baseline_days, recent_days, limit)` | `GET /analysis/fleet-behavioral-diff?baseline_days=&recent_days=&limit=` | `FleetBehavioralDiff` |
 | `model_upgrade_canary(cutover, window_hours)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=]` | `ModelUpgradeCanary` |
-| `hunt(params)` | `GET /audit/hunt?limit=[&method=&signal=&authorized=&from=&to=]` | `HuntResult` |
+| `hunt(params)` | `GET /audit/hunt?limit=[&method=&signal=&authorized=&from=&to=&tenant=&demo_session_token=]` | `HuntResult` |
 | `finops_spend(window, tenant, limit)` | `GET /finops/spend?limit=[&window=&tenant=]` | `SpendRollup` (`tenant` `None` → deployment-wide rollup) |
 | `compliance_evidence(from, to)` | `POST /compliance/evidence?from=&to=` | `ComplianceRegister` |
 | `regulatory_export(from, to, opts)` | `POST /export/regulatory?from=&to=[&include_exports=true][&include_compliance=true]` | `Vec<u8>` (raw `.tar.gz` bytes) |

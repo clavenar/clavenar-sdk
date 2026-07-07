@@ -633,6 +633,10 @@ pub struct HuntParams {
     /// Demo-session JWT. When set, the ledger scopes rows to the token's
     /// prefix before grouping by agent.
     pub demo_session_token: Option<String>,
+    /// Authenticated-operator tenant. When set without a demo-session
+    /// token, the ledger scopes rows to this tenant before grouping by
+    /// agent.
+    pub tenant: Option<String>,
 }
 
 /// One agent's roll-up row in a [`HuntResult`].
@@ -1162,6 +1166,9 @@ impl LedgerClient {
                 "&demo_session_token={}",
                 percent_encode(token)
             ));
+        }
+        if let Some(tenant) = params.tenant.as_deref() {
+            path.push_str(&format!("&tenant={}", percent_encode(tenant)));
         }
         self.get_json(&path).await
     }
@@ -1907,6 +1914,7 @@ mod tests {
                 limit: 200,
                 signal: Some("egress_violation".into()),
                 demo_session_token: Some("jwt.with/slash".into()),
+                tenant: Some("acme".into()),
                 ..Default::default()
             })
             .await
@@ -1923,6 +1931,7 @@ mod tests {
             q.get("demo_session_token").map(String::as_str),
             Some("jwt.with/slash")
         );
+        assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
         let _ = kill_tx.send(());
     }
 
