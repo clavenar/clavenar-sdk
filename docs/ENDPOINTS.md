@@ -55,6 +55,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `replay_corpus(params)` | `GET /audit/replay/corpus?since=&limit=[&until=&agent_id=&tool_type=]` | `ReplayCorpus` |
 | `verify()` | `GET /verify` | `VerifyResult` |
 | `list_exports()` | `GET /exports` | `Vec<ExportRecord>` |
+| `trigger_export()` | `POST /export` | `ExportOutcome` |
 | `envelope_analysis(agent_id, window_days)` | `GET /analysis/agent-envelope-recommendations?agent_id=&window_days=` | `EnvelopeAnalysis` |
 | `behavioral_baseline(agent_id, baseline_days, recent_days)` | `GET /analysis/agent-behavioral-baseline?agent_id=&baseline_days=&recent_days=` | `BehavioralBaseline` |
 | `silent_agents(since_hours)` | `GET /analysis/silent-agents?since_hours=` | `SilentAgentsReport` |

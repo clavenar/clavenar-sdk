@@ -27,7 +27,9 @@ use axum::{
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
-use clavenar_sdk::{AuditFilterParams, Auth, ClavenarClient, ClavenarError, LedgerClient};
+use clavenar_sdk::{
+    AuditFilterParams, Auth, ClavenarClient, ClavenarError, ExportOutcome, LedgerClient,
+};
 
 use axum::extract::Query;
 use std::collections::HashMap;
@@ -418,6 +420,8 @@ async fn audit_agent_filtered_forwards_deep_review_filters() {
                         q.get("methods").map(String::as_str),
                         Some("deep_review_finding,deep_review_failed")
                     );
+                    assert_eq!(q.get("seq_from").map(String::as_str), Some("100"));
+                    assert_eq!(q.get("seq_to").map(String::as_str), Some("900"));
                     assert_eq!(
                         q.get("original_method").map(String::as_str),
                         Some("read_file")
@@ -436,6 +440,8 @@ async fn audit_agent_filtered_forwards_deep_review_filters() {
                     q.get("methods").map(String::as_str),
                     Some("deep_review_finding,deep_review_failed")
                 );
+                assert_eq!(q.get("seq_from").map(String::as_str), Some("100"));
+                assert_eq!(q.get("seq_to").map(String::as_str), Some("900"));
                 Json(json!({ "count": 7 }))
             }),
         );
@@ -443,6 +449,8 @@ async fn audit_agent_filtered_forwards_deep_review_filters() {
 
     let ledger = LedgerClient::new(&url).unwrap();
     let filter = AuditFilterParams {
+        seq_from: Some(100),
+        seq_to: Some(900),
         methods: vec!["deep_review_finding".into(), "deep_review_failed".into()],
         original_method: Some("read_file".into()),
         reason: Some("rate_limited".into()),
@@ -477,6 +485,39 @@ async fn audit_agent_count_decodes_count_field() {
     let ledger = LedgerClient::new(&url).unwrap();
     let n = ledger.audit_agent_count("demo-bot").await.expect("count");
     assert_eq!(n, 1234);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn trigger_export_decodes_outcome() {
+    let app = Router::new().route(
+        "/export",
+        post(|| async {
+            Json(json!({
+                "Wrote": {
+                    "snapshot_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "written_at": "2026-05-04T08:00:00Z",
+                    "data_uri": "file:///snap/v2.parquet",
+                    "manifest_uri": "file:///snap/v2.metadata.json",
+                    "data_sha256": "f".repeat(64),
+                    "byte_size": 2048,
+                    "row_count": 100,
+                    "seq_lo": 51,
+                    "seq_hi": 150
+                }
+            }))
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+
+    let ledger = LedgerClient::new(&url).unwrap();
+    match ledger.trigger_export().await.expect("export outcome") {
+        ExportOutcome::Wrote(row) => {
+            assert_eq!(row.row_count, 100);
+            assert_eq!(row.seq_hi, 150);
+        }
+        ExportOutcome::NothingToExport => panic!("expected Wrote"),
+    }
     drop(shutdown);
 }
 

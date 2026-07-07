@@ -214,6 +214,13 @@ pub struct ExportRecord {
     pub seq_hi: i64,
 }
 
+/// Result of `POST /export`, the synchronous cold-tier export trigger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ExportOutcome {
+    NothingToExport,
+    Wrote(ExportRecord),
+}
+
 /// Outcome of a chain re-hash. Mirrors `clavenar_ledger::VerifyResult`.
 /// `valid=false` with `first_invalid_seq=Some(n)` means the entry at
 /// `seq=n` is the first whose hash didn't match — that's a tamper.
@@ -643,6 +650,8 @@ pub struct HuntParams {
 
 #[derive(Debug, Clone, Default)]
 pub struct AuditFilterParams {
+    pub seq_from: Option<i64>,
+    pub seq_to: Option<i64>,
     pub from: Option<chrono::DateTime<chrono::Utc>>,
     pub to: Option<chrono::DateTime<chrono::Utc>>,
     pub methods: Vec<String>,
@@ -654,6 +663,12 @@ pub struct AuditFilterParams {
 
 impl AuditFilterParams {
     fn append_query(&self, path: &mut String) {
+        if let Some(seq_from) = self.seq_from {
+            path.push_str(&format!("&seq_from={seq_from}"));
+        }
+        if let Some(seq_to) = self.seq_to {
+            path.push_str(&format!("&seq_to={seq_to}"));
+        }
         if let Some(from) = self.from {
             path.push_str(&format!("&from={}", percent_encode(&from.to_rfc3339())));
         }
@@ -1313,6 +1328,26 @@ impl LedgerClient {
     /// is typically a small bookkeeping table.
     pub async fn list_exports(&self) -> Result<Vec<ExportRecord>, ClavenarError> {
         self.get_json("exports").await
+    }
+
+    /// `POST /export` — synchronously run one cold-tier export pass.
+    /// Returns `NothingToExport` when all eligible rows are already
+    /// covered, `Wrote(record)` when a snapshot lands, and
+    /// [`ClavenarError::Server`] for backend-mode/configuration errors
+    /// such as Postgres mode or an unset export sink.
+    pub async fn trigger_export(&self) -> Result<ExportOutcome, ClavenarError> {
+        let endpoint = self
+            .base_url
+            .join("export")
+            .map_err(|e| ClavenarError::InvalidConfig(format!("join export: {e}")))?;
+        let resp = self.http.client().post(endpoint).send().await?;
+        let status = resp.status();
+        let raw = resp.text().await?;
+        if status == StatusCode::OK {
+            serde_json::from_str(&raw).map_err(ClavenarError::Decode)
+        } else {
+            Err(ClavenarError::Server { status, body: raw })
+        }
     }
 
     /// `POST /export/regulatory?from=…&to=…[&include_exports=true]` —
