@@ -576,6 +576,17 @@ pub struct FleetBehavioralDiff {
     pub returned: i64,
 }
 
+/// Optional scope for [`LedgerClient::fleet_behavioral_diff_scoped`].
+#[derive(Debug, Clone, Default)]
+pub struct FleetBehavioralDiffScope {
+    /// Demo-session JWT. When set, the ledger scopes rows to the token's
+    /// prefix before grouping by agent.
+    pub demo_session_token: Option<String>,
+    /// Authenticated-operator tenant. Used only when no demo-session
+    /// token is present.
+    pub tenant: Option<String>,
+}
+
 /// One signal's share of a canary window's rejection-signal mix.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct CanarySignalShare {
@@ -1310,8 +1321,13 @@ impl LedgerClient {
         recent_days: u32,
         limit: i64,
     ) -> Result<FleetBehavioralDiff, ClavenarError> {
-        self.fleet_behavioral_diff_for_tenant(baseline_days, recent_days, limit, None)
-            .await
+        self.fleet_behavioral_diff_scoped(
+            baseline_days,
+            recent_days,
+            limit,
+            FleetBehavioralDiffScope::default(),
+        )
+        .await
     }
 
     /// Tenant-scoped variant of [`Self::fleet_behavioral_diff`].
@@ -1322,11 +1338,35 @@ impl LedgerClient {
         limit: i64,
         tenant: Option<&str>,
     ) -> Result<FleetBehavioralDiff, ClavenarError> {
+        self.fleet_behavioral_diff_scoped(
+            baseline_days,
+            recent_days,
+            limit,
+            FleetBehavioralDiffScope {
+                demo_session_token: None,
+                tenant: tenant.map(str::to_string),
+            },
+        )
+        .await
+    }
+
+    /// Scoped variant of [`Self::fleet_behavioral_diff`]. A demo-session
+    /// token takes precedence over tenant scope on the ledger side.
+    pub async fn fleet_behavioral_diff_scoped(
+        &self,
+        baseline_days: u32,
+        recent_days: u32,
+        limit: i64,
+        scope: FleetBehavioralDiffScope,
+    ) -> Result<FleetBehavioralDiff, ClavenarError> {
         let mut path = format!(
             "analysis/fleet-behavioral-diff?baseline_days={}&recent_days={}&limit={}",
             baseline_days, recent_days, limit,
         );
-        if let Some(t) = tenant {
+        if let Some(token) = scope.demo_session_token.as_deref() {
+            path.push_str(&format!("&demo_session_token={}", percent_encode(token)));
+        }
+        if let Some(t) = scope.tenant.as_deref() {
             path.push_str(&format!("&tenant={}", percent_encode(t)));
         }
         self.get_json(&path).await
@@ -2313,6 +2353,73 @@ mod tests {
                 "tenant missing from request URI: {uri}"
             );
         }
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn fleet_behavioral_diff_threads_demo_session_token_query_param() {
+        use axum::{Router, extract::Query, routing::get};
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex};
+        use tokio::sync::oneshot;
+
+        let captured: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
+        let captured_for_handler = captured.clone();
+
+        let app = Router::new().route(
+            "/analysis/fleet-behavioral-diff",
+            get(move |Query(q): Query<HashMap<String, String>>| {
+                let captured_for_handler = captured_for_handler.clone();
+                async move {
+                    *captured_for_handler.lock().unwrap() = q;
+                    axum::Json(serde_json::json!({
+                        "baseline_days": 14,
+                        "recent_days": 7,
+                        "since_baseline": "2026-01-01T00:00:00Z",
+                        "since_recent": "2026-01-08T00:00:00Z",
+                        "now": "2026-01-15T00:00:00Z",
+                        "agents": [],
+                        "returned": 0
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let result = client
+            .fleet_behavioral_diff_scoped(
+                14,
+                7,
+                200,
+                FleetBehavioralDiffScope {
+                    demo_session_token: Some("jwt.with/slash".into()),
+                    tenant: Some("acme".into()),
+                },
+            )
+            .await
+            .unwrap();
+
+        assert!(result.agents.is_empty());
+        let q = captured.lock().unwrap();
+        assert_eq!(q.get("baseline_days").map(String::as_str), Some("14"));
+        assert_eq!(q.get("recent_days").map(String::as_str), Some("7"));
+        assert_eq!(q.get("limit").map(String::as_str), Some("200"));
+        assert_eq!(
+            q.get("demo_session_token").map(String::as_str),
+            Some("jwt.with/slash")
+        );
+        assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
         let _ = kill_tx.send(());
     }
 

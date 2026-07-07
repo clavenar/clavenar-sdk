@@ -1,6 +1,6 @@
 [package]
 name = "clavenar-sdk"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Async Rust client for Clavenar — wraps the proxy POST /mcp surface and the ledger audit/verify endpoints with typed verdicts."
 license = "Apache-2.0"
