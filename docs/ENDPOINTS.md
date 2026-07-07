@@ -45,7 +45,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `audit_agent_paged(agent_id, limit, offset)` | `GET /audit/{agent_id}?limit=&offset=` | `Vec<LedgerEntry>` |
 | `audit_agent_paged_before(agent_id, limit, before_seq)` | `GET /audit/{agent_id}?limit=&before=` | `Vec<LedgerEntry>` |
 | `audit_agent_paged_after(agent_id, limit, after_seq)` | `GET /audit/{agent_id}?limit=&after=` | `Vec<LedgerEntry>` |
-| `audit_agent_paged_since(agent_id, limit, offset, since)` | `GET /audit/{agent_id}?limit=&offset=&since=` | `Vec<LedgerEntry>` |
+| `audit_agent_paged_since(agent_id, limit, offset, since)` / `audit_agent_paged_since_for_tenant(..., tenant)` | `GET /audit/{agent_id}?limit=&offset=&since=[&tenant=]` | `Vec<LedgerEntry>` |
 | `audit_agent_paged_before_since(agent_id, limit, before_seq, since)` | `GET /audit/{agent_id}?limit=&before=&since=` | `Vec<LedgerEntry>` |
 | `audit_agent_paged_after_since(agent_id, limit, after_seq, since)` | `GET /audit/{agent_id}?limit=&after=&since=` | `Vec<LedgerEntry>` |
 | `audit_agent_count(agent_id)` | `GET /audit/{agent_id}/count` | `usize` (unwraps `{ count }`) |
@@ -56,11 +56,11 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `verify()` | `GET /verify` | `VerifyResult` |
 | `list_exports()` | `GET /exports` | `Vec<ExportRecord>` |
 | `trigger_export()` | `POST /export` | `ExportOutcome` |
-| `envelope_analysis(agent_id, window_days)` | `GET /analysis/agent-envelope-recommendations?agent_id=&window_days=` | `EnvelopeAnalysis` |
-| `behavioral_baseline(agent_id, baseline_days, recent_days)` | `GET /analysis/agent-behavioral-baseline?agent_id=&baseline_days=&recent_days=` | `BehavioralBaseline` |
-| `silent_agents(since_hours)` | `GET /analysis/silent-agents?since_hours=` | `SilentAgentsReport` |
-| `fleet_behavioral_diff(baseline_days, recent_days, limit)` | `GET /analysis/fleet-behavioral-diff?baseline_days=&recent_days=&limit=` | `FleetBehavioralDiff` |
-| `model_upgrade_canary(cutover, window_hours)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=]` | `ModelUpgradeCanary` |
+| `envelope_analysis(agent_id, window_days)` / `envelope_analysis_for_tenant(..., tenant)` | `GET /analysis/agent-envelope-recommendations?agent_id=&window_days=[&tenant=]` | `EnvelopeAnalysis` |
+| `behavioral_baseline(agent_id, baseline_days, recent_days)` / `behavioral_baseline_for_tenant(..., tenant)` | `GET /analysis/agent-behavioral-baseline?agent_id=&baseline_days=&recent_days=[&tenant=]` | `BehavioralBaseline` |
+| `silent_agents(since_hours)` / `silent_agents_for_tenant(..., tenant)` | `GET /analysis/silent-agents?since_hours=[&tenant=]` | `SilentAgentsReport` |
+| `fleet_behavioral_diff(baseline_days, recent_days, limit)` / `fleet_behavioral_diff_for_tenant(..., tenant)` | `GET /analysis/fleet-behavioral-diff?baseline_days=&recent_days=&limit=[&tenant=]` | `FleetBehavioralDiff` |
+| `model_upgrade_canary(cutover, window_hours)` / `model_upgrade_canary_for_tenant(..., tenant)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=][&tenant=]` | `ModelUpgradeCanary` |
 | `hunt(params)` | `GET /audit/hunt?limit=[&method=&signal=&authorized=&from=&to=&tenant=&demo_session_token=]` | `HuntResult` |
 | `finops_spend(window, tenant, limit)` | `GET /finops/spend?limit=[&window=&tenant=]` | `SpendRollup` (`tenant` `None` → deployment-wide rollup) |
 | `compliance_evidence(from, to)` | `POST /compliance/evidence?from=&to=` | `ComplianceRegister` |

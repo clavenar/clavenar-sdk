@@ -968,13 +968,31 @@ impl LedgerClient {
         offset: usize,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<Vec<LedgerEntry>, ClavenarError> {
-        let path = format!(
+        self.audit_agent_paged_since_for_tenant(agent_id, limit, offset, since, None)
+            .await
+    }
+
+    /// Tenant-scoped `_since` filtered audit read. `tenant=None` preserves
+    /// the legacy deployment-wide read; console operator paths pass their
+    /// resolved tenant so same-named agents in another tenant cannot bleed in.
+    pub async fn audit_agent_paged_since_for_tenant(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        offset: usize,
+        since: chrono::DateTime<chrono::Utc>,
+        tenant: Option<&str>,
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
+        let mut path = format!(
             "audit/{}?limit={}&offset={}&since={}",
             percent_encode(agent_id),
             limit,
             offset,
             percent_encode(&since.to_rfc3339()),
         );
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
@@ -1201,11 +1219,25 @@ impl LedgerClient {
         agent_id: &str,
         window_days: u32,
     ) -> Result<EnvelopeAnalysis, ClavenarError> {
-        let path = format!(
+        self.envelope_analysis_for_tenant(agent_id, window_days, None)
+            .await
+    }
+
+    /// Tenant-scoped variant of [`Self::envelope_analysis`].
+    pub async fn envelope_analysis_for_tenant(
+        &self,
+        agent_id: &str,
+        window_days: u32,
+        tenant: Option<&str>,
+    ) -> Result<EnvelopeAnalysis, ClavenarError> {
+        let mut path = format!(
             "analysis/agent-envelope-recommendations?agent_id={}&window_days={}",
             percent_encode(agent_id),
             window_days,
         );
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
@@ -1219,12 +1251,27 @@ impl LedgerClient {
         baseline_days: u32,
         recent_days: u32,
     ) -> Result<BehavioralBaseline, ClavenarError> {
-        let path = format!(
+        self.behavioral_baseline_for_tenant(agent_id, baseline_days, recent_days, None)
+            .await
+    }
+
+    /// Tenant-scoped variant of [`Self::behavioral_baseline`].
+    pub async fn behavioral_baseline_for_tenant(
+        &self,
+        agent_id: &str,
+        baseline_days: u32,
+        recent_days: u32,
+        tenant: Option<&str>,
+    ) -> Result<BehavioralBaseline, ClavenarError> {
+        let mut path = format!(
             "analysis/agent-behavioral-baseline?agent_id={}&baseline_days={}&recent_days={}",
             percent_encode(agent_id),
             baseline_days,
             recent_days,
         );
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
@@ -1236,7 +1283,19 @@ impl LedgerClient {
         &self,
         since_hours: u32,
     ) -> Result<SilentAgentsReport, ClavenarError> {
-        let path = format!("analysis/silent-agents?since_hours={}", since_hours);
+        self.silent_agents_for_tenant(since_hours, None).await
+    }
+
+    /// Tenant-scoped variant of [`Self::silent_agents`].
+    pub async fn silent_agents_for_tenant(
+        &self,
+        since_hours: u32,
+        tenant: Option<&str>,
+    ) -> Result<SilentAgentsReport, ClavenarError> {
+        let mut path = format!("analysis/silent-agents?since_hours={}", since_hours);
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
@@ -1251,10 +1310,25 @@ impl LedgerClient {
         recent_days: u32,
         limit: i64,
     ) -> Result<FleetBehavioralDiff, ClavenarError> {
-        let path = format!(
+        self.fleet_behavioral_diff_for_tenant(baseline_days, recent_days, limit, None)
+            .await
+    }
+
+    /// Tenant-scoped variant of [`Self::fleet_behavioral_diff`].
+    pub async fn fleet_behavioral_diff_for_tenant(
+        &self,
+        baseline_days: u32,
+        recent_days: u32,
+        limit: i64,
+        tenant: Option<&str>,
+    ) -> Result<FleetBehavioralDiff, ClavenarError> {
+        let mut path = format!(
             "analysis/fleet-behavioral-diff?baseline_days={}&recent_days={}&limit={}",
             baseline_days, recent_days, limit,
         );
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
+        }
         self.get_json(&path).await
     }
 
@@ -1270,12 +1344,26 @@ impl LedgerClient {
         cutover: Option<&str>,
         window_hours: u32,
     ) -> Result<ModelUpgradeCanary, ClavenarError> {
+        self.model_upgrade_canary_for_tenant(cutover, window_hours, None)
+            .await
+    }
+
+    /// Tenant-scoped variant of [`Self::model_upgrade_canary`].
+    pub async fn model_upgrade_canary_for_tenant(
+        &self,
+        cutover: Option<&str>,
+        window_hours: u32,
+        tenant: Option<&str>,
+    ) -> Result<ModelUpgradeCanary, ClavenarError> {
         let mut path = format!(
             "analysis/model-upgrade-canary?window_hours={}",
             window_hours
         );
         if let Some(c) = cutover {
             path.push_str(&format!("&cutover={}", percent_encode(c)));
+        }
+        if let Some(t) = tenant {
+            path.push_str(&format!("&tenant={}", percent_encode(t)));
         }
         self.get_json(&path).await
     }
@@ -2063,6 +2151,168 @@ mod tests {
             rows[1].payload.as_ref().unwrap()["state_after"],
             "suspended"
         );
+        let _ = kill_tx.send(());
+    }
+
+    #[tokio::test]
+    async fn tenant_scoped_analysis_methods_append_tenant_query() {
+        use axum::{Json, Router, extract::State, http::Uri, routing::get};
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, oneshot};
+
+        fn profile() -> serde_json::Value {
+            serde_json::json!({
+                "since": "2026-05-01T00:00:00Z",
+                "until": "2026-05-02T00:00:00Z",
+                "total": 0,
+                "authorized": 0,
+                "denied": 0,
+                "deny_rate": 0.0,
+                "intent_mean": 0.0,
+                "tool_mix": [],
+                "hourly": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            })
+        }
+
+        fn canary_window() -> serde_json::Value {
+            serde_json::json!({
+                "since": "2026-05-01T00:00:00Z",
+                "until": "2026-05-02T00:00:00Z",
+                "total": 0,
+                "authorized": 0,
+                "denied": 0,
+                "deny_rate": 0.0,
+                "intent_mean": 0.0,
+                "signal_mix": [],
+                "models": [],
+                "models_sampled": 0
+            })
+        }
+
+        let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let app = Router::new()
+            .fallback(get(
+                |State(seen): State<Arc<Mutex<Vec<String>>>>, uri: Uri| async move {
+                    seen.lock().await.push(uri.to_string());
+                    let body = match uri.path() {
+                        p if p.starts_with("/audit/") => serde_json::json!([]),
+                        "/analysis/agent-envelope-recommendations" => serde_json::json!({
+                            "agent_id": "bot",
+                            "window_days": 30,
+                            "since": "2026-05-01T00:00:00Z",
+                            "until": "2026-05-31T00:00:00Z",
+                            "total_calls": 0,
+                            "used_tools": []
+                        }),
+                        "/analysis/agent-behavioral-baseline" => serde_json::json!({
+                            "agent_id": "bot",
+                            "baseline_days": 30,
+                            "recent_days": 7,
+                            "baseline": profile(),
+                            "recent": profile(),
+                            "deviation": {
+                                "tool_mix": 0.0,
+                                "hourly": 0.0,
+                                "intent": 0.0,
+                                "deny_rate": 0.0,
+                                "overall": 0.0
+                            },
+                            "diff": {
+                                "new_tools": [],
+                                "vanished_tools": [],
+                                "deny_rate_delta": 0.0,
+                                "intent_delta": 0.0,
+                                "total_delta": 0
+                            },
+                            "drifted": false,
+                            "insufficient": true
+                        }),
+                        "/analysis/silent-agents" => serde_json::json!({
+                            "threshold_hours": 1,
+                            "generated_at": "2026-05-01T00:00:00Z",
+                            "silent_agents": [],
+                            "active_total": 0
+                        }),
+                        "/analysis/fleet-behavioral-diff" => serde_json::json!({
+                            "baseline_days": 14,
+                            "recent_days": 7,
+                            "since_baseline": "2026-05-01T00:00:00Z",
+                            "since_recent": "2026-05-08T00:00:00Z",
+                            "now": "2026-05-15T00:00:00Z",
+                            "agents": [],
+                            "returned": 0
+                        }),
+                        "/analysis/model-upgrade-canary" => serde_json::json!({
+                            "cutover": "2026-05-02T00:00:00Z",
+                            "window_hours": 24,
+                            "before": canary_window(),
+                            "after": canary_window(),
+                            "deltas": {
+                                "deny_rate_delta": 0.0,
+                                "intent_mean_delta": 0.0,
+                                "total_delta": 0,
+                                "new_signals": [],
+                                "vanished_signals": []
+                            },
+                            "model_changed": false,
+                            "insufficient": true
+                        }),
+                        _ => serde_json::json!({}),
+                    };
+                    Json(body)
+                },
+            ))
+            .with_state(seen.clone());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        tokio::spawn(async move {
+            axum::serve(listener, app)
+                .with_graceful_shutdown(async {
+                    let _ = kill_rx.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
+        let since = chrono::DateTime::parse_from_rfc3339("2026-05-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let _ = client
+            .audit_agent_paged_since_for_tenant("bot", 10, 0, since, Some("acme"))
+            .await
+            .unwrap();
+        let _ = client
+            .envelope_analysis_for_tenant("bot", 30, Some("acme"))
+            .await
+            .unwrap();
+        let _ = client
+            .behavioral_baseline_for_tenant("bot", 30, 7, Some("acme"))
+            .await
+            .unwrap();
+        let _ = client
+            .silent_agents_for_tenant(1, Some("acme"))
+            .await
+            .unwrap();
+        let _ = client
+            .fleet_behavioral_diff_for_tenant(14, 7, 200, Some("acme"))
+            .await
+            .unwrap();
+        let _ = client
+            .model_upgrade_canary_for_tenant(None, 24, Some("acme"))
+            .await
+            .unwrap();
+
+        let seen = seen.lock().await.clone();
+        assert_eq!(seen.len(), 6);
+        for uri in &seen {
+            assert!(
+                uri.contains("tenant=acme"),
+                "tenant missing from request URI: {uri}"
+            );
+        }
         let _ = kill_tx.send(());
     }
 
