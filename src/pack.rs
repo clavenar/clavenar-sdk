@@ -15,9 +15,9 @@
 //! primitive the chain signatures use.
 
 use base64::Engine;
+pub use ed25519_dalek::VerifyingKey;
 use ed25519_dalek::pkcs8::DecodePublicKey;
 use ed25519_dalek::{Signature, Verifier};
-pub use ed25519_dalek::VerifyingKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -149,9 +149,7 @@ pub fn verifying_key_from_jwks(
     let jwk = keys
         .iter()
         .find(|k| k.get("kid").and_then(|v| v.as_str()) == Some(key_id))
-        .ok_or_else(|| {
-            ClavenarError::InvalidConfig(format!("jwks: no key with kid={key_id}"))
-        })?;
+        .ok_or_else(|| ClavenarError::InvalidConfig(format!("jwks: no key with kid={key_id}")))?;
     let x_b64 = jwk
         .get("x")
         .and_then(|v| v.as_str())

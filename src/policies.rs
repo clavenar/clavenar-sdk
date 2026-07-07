@@ -29,7 +29,10 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::ClavenarError;
-use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
+use crate::http::{
+    HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
+    percent_encode,
+};
 
 /// One row of the `policies` table — current state of a managed
 /// policy file.
@@ -466,7 +469,6 @@ pub struct ValidatePolicyResponse {
     pub error: Option<CompileError>,
 }
 
-
 impl PoliciesClient {
     /// Build a client against `base_url` (e.g. `http://localhost:8082`).
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
@@ -542,10 +544,7 @@ impl PoliciesClient {
     // ── Read API ─────────────────────────────────────────────────
 
     /// `GET /policies?include_deleted=<bool>`. Default: hide soft-deleted.
-    pub async fn list(
-        &self,
-        include_deleted: bool,
-    ) -> Result<Vec<PolicyRow>, ClavenarError> {
+    pub async fn list(&self, include_deleted: bool) -> Result<Vec<PolicyRow>, ClavenarError> {
         let mut url = self.join("policies")?;
         if include_deleted {
             url.query_pairs_mut().append_pair("include_deleted", "true");
@@ -561,14 +560,8 @@ impl PoliciesClient {
     }
 
     /// `GET /policies/{name}/versions` — newest first.
-    pub async fn list_versions(
-        &self,
-        name: &str,
-    ) -> Result<Vec<PolicyVersionRow>, ClavenarError> {
-        let url = self.join(&format!(
-            "policies/{}/versions",
-            percent_encode(name)
-        ))?;
+    pub async fn list_versions(&self, name: &str) -> Result<Vec<PolicyVersionRow>, ClavenarError> {
+        let url = self.join(&format!("policies/{}/versions", percent_encode(name)))?;
         let resp: VersionsListResponse = self.get_json(url).await?;
         Ok(resp.versions)
     }
@@ -596,10 +589,7 @@ impl PoliciesClient {
         from: i64,
         to: i64,
     ) -> Result<DiffResponse, ClavenarError> {
-        let mut url = self.join(&format!(
-            "policies/{}/diff",
-            percent_encode(name)
-        ))?;
+        let mut url = self.join(&format!("policies/{}/diff", percent_encode(name)))?;
         url.query_pairs_mut()
             .append_pair("from", &from.to_string())
             .append_pair("to", &to.to_string());
@@ -648,10 +638,7 @@ impl PoliciesClient {
         name: &str,
         req: &StateChangeRequest<'_>,
     ) -> Result<MutationResponse, ClavenarError> {
-        let url = self.join(&format!(
-            "policies/{}/activate",
-            percent_encode(name)
-        ))?;
+        let url = self.join(&format!("policies/{}/activate", percent_encode(name)))?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
@@ -660,10 +647,7 @@ impl PoliciesClient {
         name: &str,
         req: &StateChangeRequest<'_>,
     ) -> Result<MutationResponse, ClavenarError> {
-        let url = self.join(&format!(
-            "policies/{}/deactivate",
-            percent_encode(name)
-        ))?;
+        let url = self.join(&format!("policies/{}/deactivate", percent_encode(name)))?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
@@ -753,14 +737,8 @@ impl PoliciesClient {
     /// `GET /policies/templates/{name}` — one template's frontmatter,
     /// body, and body_sha256. 404 when the template file isn't on
     /// disk.
-    pub async fn get_template(
-        &self,
-        name: &str,
-    ) -> Result<PolicyTemplateDetail, ClavenarError> {
-        let url = self.join(&format!(
-            "policies/templates/{}",
-            percent_encode(name)
-        ))?;
+    pub async fn get_template(&self, name: &str) -> Result<PolicyTemplateDetail, ClavenarError> {
+        let url = self.join(&format!("policies/templates/{}", percent_encode(name)))?;
         self.get_json(url).await
     }
 
@@ -798,10 +776,7 @@ impl PoliciesClient {
         name: &str,
         req: &LabTemplateRequest,
     ) -> Result<EvaluateBatchResponse, ClavenarError> {
-        let url = self.join(&format!(
-            "policies/templates/{}/lab",
-            percent_encode(name)
-        ))?;
+        let url = self.join(&format!("policies/templates/{}/lab", percent_encode(name)))?;
         self.send_json(reqwest::Method::POST, url, req).await
     }
 
@@ -846,10 +821,7 @@ impl PoliciesClient {
         Ok(url)
     }
 
-    async fn get_json<T: serde::de::DeserializeOwned>(
-        &self,
-        url: Url,
-    ) -> Result<T, ClavenarError> {
+    async fn get_json<T: serde::de::DeserializeOwned>(&self, url: Url) -> Result<T, ClavenarError> {
         let mut req = self.http.client().get(url);
         if let Some(token) = self.bearer.as_ref() {
             req = req.bearer_auth(token);

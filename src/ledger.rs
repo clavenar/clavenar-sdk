@@ -31,7 +31,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::ClavenarError;
-use crate::http::{default_provider, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
+use crate::http::{
+    HttpProvider, StaticHttpClient, default_provider, parse_base_url, percent_encode,
+};
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
 /// the server-side `clavenar_ledger::LedgerEntry`. `correlation_id` is
@@ -639,6 +641,53 @@ pub struct HuntParams {
     pub tenant: Option<String>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct AuditFilterParams {
+    pub from: Option<chrono::DateTime<chrono::Utc>>,
+    pub to: Option<chrono::DateTime<chrono::Utc>>,
+    pub methods: Vec<String>,
+    pub original_method: Option<String>,
+    pub reason: Option<String>,
+    pub verdict: Option<String>,
+    pub brain_delta: Option<String>,
+}
+
+impl AuditFilterParams {
+    fn append_query(&self, path: &mut String) {
+        if let Some(from) = self.from {
+            path.push_str(&format!("&from={}", percent_encode(&from.to_rfc3339())));
+        }
+        if let Some(to) = self.to {
+            path.push_str(&format!("&to={}", percent_encode(&to.to_rfc3339())));
+        }
+        if !self.methods.is_empty() {
+            let methods = self
+                .methods
+                .iter()
+                .filter(|m| !m.trim().is_empty())
+                .map(|m| percent_encode(m))
+                .collect::<Vec<_>>()
+                .join(",");
+            if !methods.is_empty() {
+                path.push_str("&methods=");
+                path.push_str(&methods);
+            }
+        }
+        if let Some(value) = self.original_method.as_deref() {
+            path.push_str(&format!("&original_method={}", percent_encode(value)));
+        }
+        if let Some(value) = self.reason.as_deref() {
+            path.push_str(&format!("&reason={}", percent_encode(value)));
+        }
+        if let Some(value) = self.verdict.as_deref() {
+            path.push_str(&format!("&verdict={}", percent_encode(value)));
+        }
+        if let Some(value) = self.brain_delta.as_deref() {
+            path.push_str(&format!("&brain_delta={}", percent_encode(value)));
+        }
+    }
+}
+
 /// One agent's roll-up row in a [`HuntResult`].
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub struct HuntAgentRollup {
@@ -755,7 +804,10 @@ impl LedgerClient {
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
-        Ok(Self { base_url: url, http })
+        Ok(Self {
+            base_url: url,
+            http,
+        })
     }
 
     /// Inject a pre-configured `reqwest::Client`. Wraps it in a
@@ -805,19 +857,13 @@ impl LedgerClient {
         // it doesn't reroute the request. UUIDs are hex-only, so the
         // encode is a no-op for the common case but defensive in
         // general.
-        let path = format!(
-            "audit/correlation/{}",
-            percent_encode(correlation_id)
-        );
+        let path = format!("audit/correlation/{}", percent_encode(correlation_id));
         self.get_json(&path).await
     }
 
     /// `GET /audit/{agent_id}` — every chain entry naming `agent_id`,
     /// oldest first. Empty vec on an unknown agent.
-    pub async fn audit_agent(
-        &self,
-        agent_id: &str,
-    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
+    pub async fn audit_agent(&self, agent_id: &str) -> Result<Vec<LedgerEntry>, ClavenarError> {
         let path = format!("audit/{}", percent_encode(agent_id));
         self.get_json(&path).await
     }
@@ -942,6 +988,57 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    pub async fn audit_agent_paged_filtered(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        offset: usize,
+        filter: &AuditFilterParams,
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
+        let mut path = format!(
+            "audit/{}?limit={}&offset={}",
+            percent_encode(agent_id),
+            limit,
+            offset,
+        );
+        filter.append_query(&mut path);
+        self.get_json(&path).await
+    }
+
+    pub async fn audit_agent_paged_before_filtered(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        before_seq: i64,
+        filter: &AuditFilterParams,
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
+        let mut path = format!(
+            "audit/{}?limit={}&before={}",
+            percent_encode(agent_id),
+            limit,
+            before_seq,
+        );
+        filter.append_query(&mut path);
+        self.get_json(&path).await
+    }
+
+    pub async fn audit_agent_paged_after_filtered(
+        &self,
+        agent_id: &str,
+        limit: usize,
+        after_seq: i64,
+        filter: &AuditFilterParams,
+    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
+        let mut path = format!(
+            "audit/{}?limit={}&after={}",
+            percent_encode(agent_id),
+            limit,
+            after_seq,
+        );
+        filter.append_query(&mut path);
+        self.get_json(&path).await
+    }
+
     /// `GET /audit/{agent_id}/count` — total chain rows naming
     /// `agent_id`. The console uses this with `audit_agent_paged` to
     /// compute total-pages without paying for the full row read. Cheap
@@ -960,6 +1057,21 @@ impl LedgerClient {
         // `as usize` is lossless for positive i64 on 64-bit hosts; on
         // 32-bit hosts SQLite would have to host >2B chain rows for
         // truncation, which isn't a realistic concern.
+        Ok(w.count.max(0) as usize)
+    }
+
+    pub async fn audit_agent_count_filtered(
+        &self,
+        agent_id: &str,
+        filter: &AuditFilterParams,
+    ) -> Result<usize, ClavenarError> {
+        #[derive(Deserialize)]
+        struct Wrap {
+            count: i64,
+        }
+        let mut path = format!("audit/{}/count?", percent_encode(agent_id));
+        filter.append_query(&mut path);
+        let w: Wrap = self.get_json(&path).await?;
         Ok(w.count.max(0) as usize)
     }
 
@@ -1040,10 +1152,7 @@ impl LedgerClient {
             params.limit,
         );
         if let Some(until) = params.until {
-            path.push_str(&format!(
-                "&until={}",
-                percent_encode(&until.to_rfc3339())
-            ));
+            path.push_str(&format!("&until={}", percent_encode(&until.to_rfc3339())));
         }
         if let Some(a) = params.agent_id.as_deref() {
             path.push_str(&format!("&agent_id={}", percent_encode(a)));
@@ -1135,7 +1244,10 @@ impl LedgerClient {
         cutover: Option<&str>,
         window_hours: u32,
     ) -> Result<ModelUpgradeCanary, ClavenarError> {
-        let mut path = format!("analysis/model-upgrade-canary?window_hours={}", window_hours);
+        let mut path = format!(
+            "analysis/model-upgrade-canary?window_hours={}",
+            window_hours
+        );
         if let Some(c) = cutover {
             path.push_str(&format!("&cutover={}", percent_encode(c)));
         }
@@ -1165,10 +1277,7 @@ impl LedgerClient {
             path.push_str(&format!("&to={}", percent_encode(&t.to_rfc3339())));
         }
         if let Some(token) = params.demo_session_token.as_deref() {
-            path.push_str(&format!(
-                "&demo_session_token={}",
-                percent_encode(token)
-            ));
+            path.push_str(&format!("&demo_session_token={}", percent_encode(token)));
         }
         if let Some(tenant) = params.tenant.as_deref() {
             path.push_str(&format!("&tenant={}", percent_encode(tenant)));
@@ -1349,7 +1458,8 @@ impl LedgerClient {
 
     /// `GET /cases/{id}` — the case plus its expanded chain evidence.
     pub async fn get_case(&self, id: &str) -> Result<CaseDetail, ClavenarError> {
-        self.get_json(&format!("cases/{}", percent_encode(id))).await
+        self.get_json(&format!("cases/{}", percent_encode(id)))
+            .await
     }
 
     /// `POST /cases/{id}/timeline` — append an event.
@@ -1586,7 +1696,10 @@ mod tests {
         });
         let parsed: LedgerEntry = serde_json::from_value(v4).unwrap();
         assert_eq!(parsed.chain_version, 4);
-        assert_eq!(parsed.brain_evidence_sha256.as_deref(), Some("b".repeat(64).as_str()));
+        assert_eq!(
+            parsed.brain_evidence_sha256.as_deref(),
+            Some("b".repeat(64).as_str())
+        );
 
         // Legacy row without the field decodes to None.
         let legacy = serde_json::json!({
@@ -1798,59 +1911,65 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_for_agent_round_trips_against_mock() {
-        use axum::{routing::get, Router};
+        use axum::{Router, routing::get};
         use tokio::sync::oneshot;
 
         // Mock the ledger endpoint with two canned v3 rows.
-        let app = Router::new().route(
-            "/audit/agent/{tenant}/{agent_id}/lifecycle",
-            get(|axum::extract::Path((tenant, agent_id)): axum::extract::Path<(String, String)>| async move {
-                axum::Json(serde_json::json!([
-                    {
-                        "id": "01940000-0000-7000-8000-000000000001",
-                        "timestamp": "2026-05-05T14:00:00Z",
-                        "agent_id": agent_id,
-                        "method": "agent.registered",
-                        "intent_category": "Lifecycle",
-                        "authorized": true,
-                        "reasoning": "",
-                        "policy_decision": null,
-                        "seq": 1,
-                        "prev_hash": "00".repeat(32),
-                        "entry_hash": "ab".repeat(32),
-                        "chain_version": 3,
-                        "event_kind": "agent.registered",
-                        "tenant": tenant,
-                        "agent_name": "support-bot-3",
-                        "actor_sub": "user:alice@acme.com",
-                        "actor_idp": "okta",
-                        "payload_sha256": "cd".repeat(32),
-                        "payload": { "owner_team": "payments" }
+        let app =
+            Router::new().route(
+                "/audit/agent/{tenant}/{agent_id}/lifecycle",
+                get(
+                    |axum::extract::Path((tenant, agent_id)): axum::extract::Path<(
+                        String,
+                        String,
+                    )>| async move {
+                        axum::Json(serde_json::json!([
+                            {
+                                "id": "01940000-0000-7000-8000-000000000001",
+                                "timestamp": "2026-05-05T14:00:00Z",
+                                "agent_id": agent_id,
+                                "method": "agent.registered",
+                                "intent_category": "Lifecycle",
+                                "authorized": true,
+                                "reasoning": "",
+                                "policy_decision": null,
+                                "seq": 1,
+                                "prev_hash": "00".repeat(32),
+                                "entry_hash": "ab".repeat(32),
+                                "chain_version": 3,
+                                "event_kind": "agent.registered",
+                                "tenant": tenant,
+                                "agent_name": "support-bot-3",
+                                "actor_sub": "user:alice@acme.com",
+                                "actor_idp": "okta",
+                                "payload_sha256": "cd".repeat(32),
+                                "payload": { "owner_team": "payments" }
+                            },
+                            {
+                                "id": "01940000-0000-7000-8000-000000000002",
+                                "timestamp": "2026-05-05T14:30:00Z",
+                                "agent_id": agent_id,
+                                "method": "agent.suspended",
+                                "intent_category": "Lifecycle",
+                                "authorized": true,
+                                "reasoning": "",
+                                "policy_decision": null,
+                                "seq": 2,
+                                "prev_hash": "ab".repeat(32),
+                                "entry_hash": "ef".repeat(32),
+                                "chain_version": 3,
+                                "event_kind": "agent.suspended",
+                                "tenant": tenant,
+                                "agent_name": "support-bot-3",
+                                "actor_sub": "user:alice@acme.com",
+                                "actor_idp": "okta",
+                                "payload_sha256": "01".repeat(32),
+                                "payload": { "state_before": "active", "state_after": "suspended" }
+                            }
+                        ]))
                     },
-                    {
-                        "id": "01940000-0000-7000-8000-000000000002",
-                        "timestamp": "2026-05-05T14:30:00Z",
-                        "agent_id": agent_id,
-                        "method": "agent.suspended",
-                        "intent_category": "Lifecycle",
-                        "authorized": true,
-                        "reasoning": "",
-                        "policy_decision": null,
-                        "seq": 2,
-                        "prev_hash": "ab".repeat(32),
-                        "entry_hash": "ef".repeat(32),
-                        "chain_version": 3,
-                        "event_kind": "agent.suspended",
-                        "tenant": tenant,
-                        "agent_name": "support-bot-3",
-                        "actor_sub": "user:alice@acme.com",
-                        "actor_idp": "okta",
-                        "payload_sha256": "01".repeat(32),
-                        "payload": { "state_before": "active", "state_after": "suspended" }
-                    }
-                ]))
-            }),
-        );
+                ),
+            );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
@@ -1869,21 +1988,26 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].entry.event_kind.as_deref(), Some("agent.registered"));
+        assert_eq!(
+            rows[0].entry.event_kind.as_deref(),
+            Some("agent.registered")
+        );
         assert_eq!(rows[1].entry.event_kind.as_deref(), Some("agent.suspended"));
-        assert_eq!(rows[1].payload.as_ref().unwrap()["state_after"], "suspended");
+        assert_eq!(
+            rows[1].payload.as_ref().unwrap()["state_after"],
+            "suspended"
+        );
         let _ = kill_tx.send(());
     }
 
     #[tokio::test]
     async fn hunt_threads_demo_session_token_query_param() {
-        use axum::{extract::Query, routing::get, Router};
+        use axum::{Router, extract::Query, routing::get};
         use std::collections::HashMap;
         use std::sync::{Arc, Mutex};
         use tokio::sync::oneshot;
 
-        let captured: Arc<Mutex<HashMap<String, String>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let captured: Arc<Mutex<HashMap<String, String>>> = Arc::new(Mutex::new(HashMap::new()));
         let captured_for_handler = captured.clone();
 
         let app = Router::new().route(
@@ -1946,7 +2070,7 @@ mod tests {
         // returns a deterministic .tar.gz-shaped placeholder.
         use axum::extract::Query;
         use axum::http::{HeaderMap, StatusCode};
-        use axum::{routing::post, Router};
+        use axum::{Router, routing::post};
         use std::sync::{Arc, Mutex};
         use tokio::sync::oneshot;
 
@@ -1982,9 +2106,7 @@ mod tests {
                         c.body_len = body.len();
                         // 8-byte placeholder gzip-magic-prefix shape
                         // (real bundle bytes; the SDK doesn't decode).
-                        let placeholder = vec![
-                            0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00,
-                        ];
+                        let placeholder = vec![0x1F, 0x8B, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00];
                         (StatusCode::OK, placeholder)
                     }
                 },
@@ -2070,7 +2192,7 @@ mod tests {
         // with the status preserved. Lets ctl distinguish "operator
         // misuse" (validation, payload too large) from transport.
         use axum::http::StatusCode;
-        use axum::{routing::post, Router};
+        use axum::{Router, routing::post};
         use tokio::sync::oneshot;
 
         let app = Router::new().route(
@@ -2109,7 +2231,7 @@ mod tests {
     #[tokio::test]
     async fn compliance_evidence_parses_register() {
         use axum::http::StatusCode;
-        use axum::{routing::post, Json, Router};
+        use axum::{Json, Router, routing::post};
         use tokio::sync::oneshot;
 
         let app = Router::new().route(

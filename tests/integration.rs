@@ -27,7 +27,7 @@ use axum::{
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
-use clavenar_sdk::{Auth, LedgerClient, ClavenarClient, ClavenarError};
+use clavenar_sdk::{AuditFilterParams, Auth, ClavenarClient, ClavenarError, LedgerClient};
 
 use axum::extract::Query;
 use std::collections::HashMap;
@@ -114,7 +114,13 @@ async fn call_tool_structured_veto_parses_fields() {
         .await
         .expect_err("expected veto");
     match err {
-        ClavenarError::Veto { intent_category, reasons, review_reasons, correlation_id, raw } => {
+        ClavenarError::Veto {
+            intent_category,
+            reasons,
+            review_reasons,
+            correlation_id,
+            raw,
+        } => {
             assert_eq!(intent_category, "DangerousTool");
             assert_eq!(reasons.len(), 1);
             assert!(reasons[0].contains("SQL"));
@@ -151,7 +157,13 @@ async fn call_tool_plain_text_veto_keeps_body_in_raw() {
         .await
         .expect_err("expected veto");
     match err {
-        ClavenarError::Veto { intent_category, reasons, review_reasons, correlation_id, raw } => {
+        ClavenarError::Veto {
+            intent_category,
+            reasons,
+            review_reasons,
+            correlation_id,
+            raw,
+        } => {
             // No structured fields, but the raw body is preserved.
             assert!(intent_category.is_empty());
             assert!(reasons.is_empty());
@@ -191,7 +203,10 @@ async fn bad_request_maps_to_bad_request_error() {
     let app = Router::new().route(
         "/mcp",
         post(|| async {
-            (StatusCode::BAD_REQUEST, "invalid JSON-RPC body: missing field `method`")
+            (
+                StatusCode::BAD_REQUEST,
+                "invalid JSON-RPC body: missing field `method`",
+            )
                 .into_response()
         }),
     );
@@ -222,7 +237,10 @@ async fn bearer_token_is_forwarded_in_authorization_header() {
                 .and_then(|h| h.to_str().ok())
                 .unwrap_or("");
             if got == "Bearer secret-token" {
-                (StatusCode::OK, Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})))
+                (
+                    StatusCode::OK,
+                    Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})),
+                )
                     .into_response()
             } else {
                 (StatusCode::UNAUTHORIZED, format!("got: {got}")).into_response()
@@ -252,7 +270,10 @@ async fn client_preserves_path_prefix_in_base_url() {
     let app = Router::new().route(
         "/clavenar/mcp",
         post(|| async {
-            (StatusCode::OK, Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})))
+            (
+                StatusCode::OK,
+                Json(json!({"jsonrpc":"2.0","id":1,"result":"ok"})),
+            )
                 .into_response()
         }),
     );
@@ -261,7 +282,10 @@ async fn client_preserves_path_prefix_in_base_url() {
     // No trailing slash, has a path component — the case that used to break.
     let prefixed = format!("{origin}/clavenar");
     let client = ClavenarClient::builder(&prefixed).unwrap().build().unwrap();
-    let reply = client.call_tool("search", json!({})).await.expect("prefix preserved");
+    let reply = client
+        .call_tool("search", json!({}))
+        .await
+        .expect("prefix preserved");
     assert_eq!(reply["result"], "ok");
     drop(shutdown);
 }
@@ -362,11 +386,13 @@ async fn audit_agent_paged_forwards_limit_and_offset() {
     // body keeps the test focused on URL construction.
     let app = Router::new().route(
         "/audit/{agent_id}",
-        get(|Path(_aid): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
-            assert_eq!(q.get("limit").map(String::as_str), Some("25"));
-            assert_eq!(q.get("offset").map(String::as_str), Some("50"));
-            Json(json!([])).into_response()
-        }),
+        get(
+            |Path(_aid): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(q.get("limit").map(String::as_str), Some("25"));
+                assert_eq!(q.get("offset").map(String::as_str), Some("50"));
+                Json(json!([])).into_response()
+            },
+        ),
     );
     let (url, shutdown) = spawn(app).await;
 
@@ -376,6 +402,64 @@ async fn audit_agent_paged_forwards_limit_and_offset() {
         .await
         .expect("paged");
     assert!(rows.is_empty());
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn audit_agent_filtered_forwards_deep_review_filters() {
+    let app = Router::new()
+        .route(
+            "/audit/{agent_id}",
+            get(
+                |Path(_aid): Path<String>, Query(q): Query<HashMap<String, String>>| async move {
+                    assert_eq!(q.get("limit").map(String::as_str), Some("25"));
+                    assert_eq!(q.get("before").map(String::as_str), Some("900"));
+                    assert_eq!(
+                        q.get("methods").map(String::as_str),
+                        Some("deep_review_finding,deep_review_failed")
+                    );
+                    assert_eq!(
+                        q.get("original_method").map(String::as_str),
+                        Some("read_file")
+                    );
+                    assert_eq!(q.get("reason").map(String::as_str), Some("rate_limited"));
+                    assert_eq!(q.get("verdict").map(String::as_str), Some("Red"));
+                    assert_eq!(q.get("brain_delta").map(String::as_str), Some("Escalated"));
+                    Json(json!([])).into_response()
+                },
+            ),
+        )
+        .route(
+            "/audit/{agent_id}/count",
+            get(|Query(q): Query<HashMap<String, String>>| async move {
+                assert_eq!(
+                    q.get("methods").map(String::as_str),
+                    Some("deep_review_finding,deep_review_failed")
+                );
+                Json(json!({ "count": 7 }))
+            }),
+        );
+    let (url, shutdown) = spawn(app).await;
+
+    let ledger = LedgerClient::new(&url).unwrap();
+    let filter = AuditFilterParams {
+        methods: vec!["deep_review_finding".into(), "deep_review_failed".into()],
+        original_method: Some("read_file".into()),
+        reason: Some("rate_limited".into()),
+        verdict: Some("Red".into()),
+        brain_delta: Some("Escalated".into()),
+        ..AuditFilterParams::default()
+    };
+    let rows = ledger
+        .audit_agent_paged_before_filtered("demo-bot", 25, 900, &filter)
+        .await
+        .expect("filtered page");
+    assert!(rows.is_empty());
+    let count = ledger
+        .audit_agent_count_filtered("demo-bot", &filter)
+        .await
+        .expect("filtered count");
+    assert_eq!(count, 7);
     drop(shutdown);
 }
 

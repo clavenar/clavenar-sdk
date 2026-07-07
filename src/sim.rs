@@ -23,7 +23,9 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::ClavenarError;
-use crate::http::{default_provider, decode_response, parse_base_url, HttpProvider, StaticHttpClient};
+use crate::http::{
+    HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
+};
 
 /// One row in the live agent roster — mirrors the simulator's
 /// internal `AgentRecord`. `transient=false` for the boot roster,
@@ -90,7 +92,10 @@ impl SimClient {
     pub fn new(base_url: impl AsRef<str>) -> Result<Self, ClavenarError> {
         let url = parse_base_url(base_url.as_ref())?;
         let http = default_provider()?;
-        Ok(Self { base_url: url, http })
+        Ok(Self {
+            base_url: url,
+            http,
+        })
     }
 
     /// Inject a pre-configured `reqwest::Client`. Same use case as
@@ -124,8 +129,11 @@ impl SimClient {
     /// in place. Returns the post-update [`SimStatus`] so the caller
     /// can render the new state without a follow-up `status()` call.
     pub async fn set_multiplier(&self, multiplier: f64) -> Result<SimStatus, ClavenarError> {
-        self.post_json("multiplier", &serde_json::json!({ "traffic_multiplier": multiplier }))
-            .await
+        self.post_json(
+            "multiplier",
+            &serde_json::json!({ "traffic_multiplier": multiplier }),
+        )
+        .await
     }
 
     /// `POST /running` — flip the simulator's start/stop flag.
@@ -161,7 +169,10 @@ impl SimClient {
             spawned: Vec<String>,
         }
         let w: Wrap = self
-            .post_json("agents", &serde_json::json!({ "persona": persona, "count": count }))
+            .post_json(
+                "agents",
+                &serde_json::json!({ "persona": persona, "count": count }),
+            )
             .await?;
         Ok(w.spawned)
     }

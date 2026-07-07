@@ -55,42 +55,39 @@ mod policies;
 mod sim;
 
 pub use agents::{
-    create_request_matches, AgentCreated, AgentListFilter, AgentRecord, AgentState, AgentsClient,
-    CertificateBody, CertificationCase, CertificationRequest, ContainmentStatus, CreateAgentRequest,
+    AgentCreated, AgentListFilter, AgentRecord, AgentState, AgentsClient, CertificateBody,
+    CertificationCase, CertificationRequest, ContainmentStatus, CreateAgentRequest,
     EnvelopeRequest, ForceHilFlag, GrantConsumption, LifecycleRequest, LifecycleResponse,
-    OrphanWorkload, SignedCertificate, TenantBudget, TenantOffboardResult,
-    MIGRATION_ACTOR_SUB_PREFIX,
+    MIGRATION_ACTOR_SUB_PREFIX, OrphanWorkload, SignedCertificate, TenantBudget,
+    TenantOffboardResult, create_request_matches,
 };
+pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
-    AnchorSummary, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline, CanaryDeltas,
-    CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord, CaseTimelineEvent,
-    ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry, EnvelopeAnalysis,
-    EvidenceStatus, ExportRecord, FleetBehavioralDiff, FleetDiffRow, HuntAgentRollup, HuntParams,
-    HuntResult, LedgerClient, LedgerEntry, LogEntry, LogReceipt, LifecycleRow, ModelUpgradeCanary,
-    RegisterWindow,
-    RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SilentAgent, SilentAgentsReport,
-    SpendAgentRow, SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
-};
-pub use brain::{
-    BrainClient, ExplainPatternRequest, ExplainPatternResponse,
-};
-pub use policies::{
-    parse_batch_error, parse_mine_error, BatchMode, BatchMutationResponse, BatchStateChangeRequest,
-    BatchVerdict, BatchVerdictResult, CompileError, ConflictResponse, CreatePolicyRequest,
-    DiffClass, DiffResponse, EvaluateBatchError,
-    EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest, LabTemplateRequest,
-    MineCandidate, MineError, MineLabReplay, MineRequest, MineResponse, MutationResponse,
-    PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson, PolicyRow, PolicyTemplate,
-    ValidatePolicyRequest, ValidatePolicyResponse,
-    PolicyTemplateDetail, PolicyVersionRow, RollbackRequest, StateChangeRequest,
-    UpdatePolicyRequest, VersionsListResponse,
+    AnchorSummary, AuditFilterParams, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline,
+    CanaryDeltas, CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord,
+    CaseTimelineEvent, ChainVerifySummary, ComplianceRegister, ControlEvidence, CorpusEntry,
+    EnvelopeAnalysis, EvidenceStatus, ExportRecord, FleetBehavioralDiff, FleetDiffRow,
+    HuntAgentRollup, HuntParams, HuntResult, LedgerClient, LedgerEntry, LifecycleRow, LogEntry,
+    LogReceipt, ModelUpgradeCanary, RegisterWindow, RegulatoryExportOptions, ReplayCorpus,
+    ReplayCorpusParams, SilentAgent, SilentAgentsReport, SpendAgentRow, SpendRollup, ToolShare,
+    ToolUsage, VerifyResult, WindowDiff,
 };
 pub use pack::{
-    verify_pack, verifying_key_from_jwks, verifying_key_from_pem, PackEntry, PackManifest,
-    PackSignature, PackSignatureRef, PackSigner, PackVerifyOutcome, VerifyingKey, PACK_AUDIENCE,
-    PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,
+    PACK_AUDIENCE, PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,
+    PackEntry, PackManifest, PackSignature, PackSignatureRef, PackSigner, PackVerifyOutcome,
+    VerifyingKey, verify_pack, verifying_key_from_jwks, verifying_key_from_pem,
+};
+pub use policies::{
+    BatchMode, BatchMutationResponse, BatchStateChangeRequest, BatchVerdict, BatchVerdictResult,
+    CompileError, ConflictResponse, CreatePolicyRequest, DiffClass, DiffResponse,
+    EvaluateBatchError, EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest,
+    LabTemplateRequest, MineCandidate, MineError, MineLabReplay, MineRequest, MineResponse,
+    MutationResponse, PoliciesClient, PoliciesListResponse, PolicyDetail, PolicyInputJson,
+    PolicyRow, PolicyTemplate, PolicyTemplateDetail, PolicyVersionRow, RollbackRequest,
+    StateChangeRequest, UpdatePolicyRequest, ValidatePolicyRequest, ValidatePolicyResponse,
+    VersionsListResponse, parse_batch_error, parse_mine_error,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};

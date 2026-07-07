@@ -54,7 +54,9 @@ impl StaticHttpClient {
     /// TLS / proxy / timeout config and isn't plumbing a credential
     /// rotation system into the SDK.
     pub fn new(client: Client) -> Self {
-        Self { inner: Arc::new(client) }
+        Self {
+            inner: Arc::new(client),
+        }
     }
 }
 
@@ -67,7 +69,9 @@ impl HttpProvider for StaticHttpClient {
 /// Internal: build the default plain-HTTP `StaticHttpClient` for a
 /// per-service client's `new()` constructor.
 pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError> {
-    let client = Client::builder().build().map_err(ClavenarError::Transport)?;
+    let client = Client::builder()
+        .build()
+        .map_err(ClavenarError::Transport)?;
     Ok(Arc::new(StaticHttpClient::new(client)))
 }
 
@@ -80,8 +84,8 @@ pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError>
 /// trailing slash makes every subsequent `join` behave as append, which
 /// is what every caller in this crate actually wants.
 pub(crate) fn parse_base_url(s: &str) -> Result<Url, ClavenarError> {
-    let mut url = Url::parse(s)
-        .map_err(|e| ClavenarError::InvalidConfig(format!("base_url: {e}")))?;
+    let mut url =
+        Url::parse(s).map_err(|e| ClavenarError::InvalidConfig(format!("base_url: {e}")))?;
     if !url.path().ends_with('/') {
         let with_slash = format!("{}/", url.path());
         url.set_path(&with_slash);
@@ -102,7 +106,10 @@ pub(crate) fn decode_response<T: serde::de::DeserializeOwned>(
         }
         StatusCode::UNAUTHORIZED => Err(ClavenarError::Unauthorized(body)),
         StatusCode::BAD_REQUEST => Err(ClavenarError::BadRequest(body)),
-        other => Err(ClavenarError::Server { status: other, body }),
+        other => Err(ClavenarError::Server {
+            status: other,
+            body,
+        }),
     }
 }
 
@@ -187,11 +194,9 @@ mod tests {
         struct Body {
             ok: bool,
         }
-        let r: Result<Body, _> =
-            decode_response(StatusCode::OK, r#"{"ok":true}"#.into());
+        let r: Result<Body, _> = decode_response(StatusCode::OK, r#"{"ok":true}"#.into());
         assert_eq!(r.unwrap(), Body { ok: true });
-        let r: Result<Body, _> =
-            decode_response(StatusCode::CREATED, r#"{"ok":false}"#.into());
+        let r: Result<Body, _> = decode_response(StatusCode::CREATED, r#"{"ok":false}"#.into());
         assert_eq!(r.unwrap(), Body { ok: false });
     }
 }

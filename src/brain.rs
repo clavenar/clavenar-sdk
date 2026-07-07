@@ -17,8 +17,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::http::{decode_response, default_provider, parse_base_url, HttpProvider, StaticHttpClient};
 use crate::ClavenarError;
+use crate::http::{
+    HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
+};
 
 /// Wire shape for `POST /explain-pattern`. The PII contract here is
 /// enforced by the struct itself: only aggregated thresholds, the

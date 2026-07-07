@@ -31,7 +31,10 @@ use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 
 use crate::ClavenarError;
-use crate::http::{default_provider, decode_response, parse_base_url, percent_encode, HttpProvider, StaticHttpClient};
+use crate::http::{
+    HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
+    percent_encode,
+};
 
 /// Agent lifecycle state per clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
 /// lowercased variant name (matches the server's `as_wire`).
@@ -487,10 +490,7 @@ impl AgentsClient {
     /// `GET /agents/orphans?tenant=<t>` — the workload-discovery feed:
     /// names that minted an SVID but were never registered as agents.
     /// Empty vec when the registry already covers every minted name.
-    pub async fn list_orphans(
-        &self,
-        tenant: &str,
-    ) -> Result<Vec<OrphanWorkload>, ClavenarError> {
+    pub async fn list_orphans(&self, tenant: &str) -> Result<Vec<OrphanWorkload>, ClavenarError> {
         let mut url = self
             .base_url
             .join("agents/orphans")
@@ -559,7 +559,10 @@ impl AgentsClient {
     /// `clavenar-identity::agents::CreateAgentRequest` (spec §5.2).
     /// Returns the full record with the `spiffe_id_pattern` field
     /// surfaced under the same envelope.
-    pub async fn create(&self, req: &CreateAgentRequest<'_>) -> Result<AgentCreated, ClavenarError> {
+    pub async fn create(
+        &self,
+        req: &CreateAgentRequest<'_>,
+    ) -> Result<AgentCreated, ClavenarError> {
         let url = self.join("agents")?;
         self.post_json(url, req).await
     }
@@ -594,7 +597,8 @@ impl AgentsClient {
         tenant: &str,
         reason: Option<&str>,
     ) -> Result<LifecycleResponse, ClavenarError> {
-        self.lifecycle_call(id, tenant, "decommission", reason).await
+        self.lifecycle_call(id, tenant, "decommission", reason)
+            .await
     }
 
     /// `GET /agents/{id}/containment` — the agent's active force-HIL
@@ -808,10 +812,10 @@ impl AgentsClient {
 mod tests {
     use super::*;
     use axum::{
+        Json, Router,
         extract::{Path, Query, State},
         http::HeaderMap,
         routing::get,
-        Json, Router,
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -974,15 +978,30 @@ mod tests {
     async fn list_round_trips_records() {
         let (base, shutdown) = spawn_mock(|| MockState {
             records: Arc::new(vec![
-                record("01HW...A001", "acme", "support-bot-3", AgentState::Active, "payments"),
-                record("01HW...A002", "acme", "legacy-bot", AgentState::Suspended, "infra"),
+                record(
+                    "01HW...A001",
+                    "acme",
+                    "support-bot-3",
+                    AgentState::Active,
+                    "payments",
+                ),
+                record(
+                    "01HW...A002",
+                    "acme",
+                    "legacy-bot",
+                    AgentState::Suspended,
+                    "infra",
+                ),
             ]),
             expected_tenant: "acme".into(),
         })
         .await;
 
         let client = AgentsClient::new(&base).unwrap().with_bearer("dev-token");
-        let rows = client.list("acme", AgentListFilter::default()).await.unwrap();
+        let rows = client
+            .list("acme", AgentListFilter::default())
+            .await
+            .unwrap();
         assert_eq!(rows.len(), 2);
         assert!(rows.iter().any(|r| r.agent_name == "support-bot-3"));
         let _ = shutdown.send(());
@@ -992,7 +1011,13 @@ mod tests {
     async fn list_passes_filter_query_params() {
         let (base, shutdown) = spawn_mock(|| MockState {
             records: Arc::new(vec![
-                record("a1", "acme", "support-bot-3", AgentState::Active, "payments"),
+                record(
+                    "a1",
+                    "acme",
+                    "support-bot-3",
+                    AgentState::Active,
+                    "payments",
+                ),
                 record("a2", "acme", "legacy-bot", AgentState::Suspended, "infra"),
             ]),
             expected_tenant: "acme".into(),
@@ -1307,15 +1332,27 @@ mod tests {
             state: AgentState::Active,
             scope_envelope: body["scope_envelope"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             yellow_envelope: body["yellow_envelope"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             attestation_kinds_accepted: body["attestation_kinds"]
                 .as_array()
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default(),
             created_by_sub: "user:test".into(),
             created_by_idp: "okta".into(),
@@ -1426,7 +1463,11 @@ mod tests {
     ) -> (axum::http::StatusCode, Json<serde_json::Value>) {
         let new_scope: Vec<String> = body["scope_envelope"]
             .as_array()
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default();
         let mut rows = state.records.lock().await;
         let Some(r) = rows.iter_mut().find(|r| r.id == id) else {
@@ -1440,8 +1481,7 @@ mod tests {
             r.scope_envelope.iter().map(String::as_str).collect();
         let new: std::collections::BTreeSet<&str> = new_scope.iter().map(String::as_str).collect();
         if !new.is_subset(&old) {
-            let offenders: Vec<String> =
-                new.difference(&old).map(|s| (*s).to_string()).collect();
+            let offenders: Vec<String> = new.difference(&old).map(|s| (*s).to_string()).collect();
             return (
                 axum::http::StatusCode::UNPROCESSABLE_ENTITY,
                 Json(json!({"error":"envelope_not_narrower","offenders":offenders})),
@@ -1471,9 +1511,11 @@ mod tests {
         let created = client.create(&req).await.unwrap();
         assert_eq!(created.record.agent_name, "support-bot-3");
         assert_eq!(created.record.state, AgentState::Active);
-        assert!(created
-            .spiffe_id_pattern
-            .ends_with("/agent/support-bot-3/instance/*"));
+        assert!(
+            created
+                .spiffe_id_pattern
+                .ends_with("/agent/support-bot-3/instance/*")
+        );
         let _ = shutdown.send(());
     }
 
@@ -1673,7 +1715,8 @@ mod tests {
         assert_eq!(fa, fb, "fingerprint must be deterministic");
         assert_eq!(fa.len(), 8, "8 hex chars (4 bytes of sha256)");
         assert!(
-            fa.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            fa.bytes()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
             "must be lowercase hex; got {fa:?}",
         );
         assert!(a.has_bearer());

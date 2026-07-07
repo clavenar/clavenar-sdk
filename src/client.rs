@@ -17,7 +17,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::ClavenarError;
-use crate::http::{default_provider, parse_base_url, HttpProvider, StaticHttpClient};
+use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
 
 /// Authentication mode for the proxy.
 ///
@@ -83,11 +83,7 @@ impl ClavenarClient {
     /// structured 403, [`ClavenarError::Unauthorized`] on 401,
     /// [`ClavenarError::BadRequest`] on 400, or one of the other
     /// [`ClavenarError`] arms.
-    pub async fn call_tool(
-        &self,
-        name: &str,
-        arguments: Value,
-    ) -> Result<Value, ClavenarError> {
+    pub async fn call_tool(&self, name: &str, arguments: Value) -> Result<Value, ClavenarError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
             "jsonrpc": "2.0",
@@ -101,11 +97,7 @@ impl ClavenarClient {
     /// `POST /mcp` with an arbitrary JSON-RPC body. Use this for
     /// methods other than `tools/call` (`tools/list`, custom RPCs,
     /// etc.).
-    pub async fn send_jsonrpc(
-        &self,
-        method: &str,
-        params: Value,
-    ) -> Result<Value, ClavenarError> {
+    pub async fn send_jsonrpc(&self, method: &str, params: Value) -> Result<Value, ClavenarError> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
             "jsonrpc": "2.0",
@@ -139,7 +131,10 @@ impl ClavenarClient {
             StatusCode::FORBIDDEN => Err(parse_veto(&raw)),
             StatusCode::UNAUTHORIZED => Err(ClavenarError::Unauthorized(raw)),
             StatusCode::BAD_REQUEST => Err(ClavenarError::BadRequest(raw)),
-            other => Err(ClavenarError::Server { status: other, body: raw }),
+            other => Err(ClavenarError::Server {
+                status: other,
+                body: raw,
+            }),
         }
     }
 }
@@ -295,7 +290,11 @@ mod tests {
         // becomes an empty Vec, not a parse error.
         let body = r#"{ "intent_category": "Velocity" }"#;
         match parse_veto(body) {
-            ClavenarError::Veto { intent_category, reasons, .. } => {
+            ClavenarError::Veto {
+                intent_category,
+                reasons,
+                ..
+            } => {
                 assert_eq!(intent_category, "Velocity");
                 assert!(reasons.is_empty());
             }
