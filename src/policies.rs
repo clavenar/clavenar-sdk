@@ -332,6 +332,27 @@ pub struct MineCandidate {
     pub evidence_count: u32,
     pub score: f32,
     pub lab_replay: MineLabReplay,
+    #[serde(default)]
+    pub threshold: serde_json::Value,
+    #[serde(default)]
+    pub flipped_examples: Vec<MineFlippedExample>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MineFlippedExample {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub correlation_id: Option<String>,
+    pub diff_label: String,
+    pub tool_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    pub agent_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_time: Option<String>,
+    pub intent_score: f32,
+    pub recent_request_count: u32,
+    pub before_reasons: Vec<String>,
+    pub after_reasons: Vec<String>,
 }
 
 /// `POST /policies/mine` request. The console + ctl construct the
@@ -1091,5 +1112,92 @@ mod tests {
         assert_eq!(resp.skipped, 1);
         assert_eq!(resp.results.len(), 2);
         assert_eq!(resp.results[0].name, "a.rego");
+    }
+
+    #[test]
+    fn mine_response_decodes_sanitized_evidence_fields() {
+        let body = serde_json::json!({
+            "corpus_size": 22,
+            "candidates_dropped": 0,
+            "evaluated_in_ms": 12,
+            "candidates": [{
+                "id": "candidate-1",
+                "kind": "after_hours",
+                "rule_name": "after_hours_bulk_export_v1",
+                "one_liner": "off-hours bulk_export",
+                "brain_enriched": false,
+                "rego_body": "package clavenar.authz\nimport rego.v1\n",
+                "compile_ok": true,
+                "evidence_count": 11,
+                "score": 42.5,
+                "lab_replay": {
+                    "allow_to_deny": 0,
+                    "allow_to_yellow": 11,
+                    "deny_to_allow": 0,
+                    "deny_to_yellow": 0,
+                    "yellow_to_allow": 0,
+                    "yellow_to_deny": 0,
+                    "unchanged": 11,
+                    "catalog_regressions": 0
+                },
+                "threshold": {"off_hours_pct": 0.5, "off_hours_count": 11},
+                "flipped_examples": [{
+                    "correlation_id": "cid-1",
+                    "diff_label": "Allow -> Yellow",
+                    "tool_type": "bulk_export",
+                    "method": "tools/call",
+                    "agent_kind": "mcp",
+                    "current_time": "2026-05-04T04:00:00Z",
+                    "intent_score": 0.1,
+                    "recent_request_count": 0,
+                    "before_reasons": ["allow"],
+                    "after_reasons": ["review: learned"]
+                }]
+            }]
+        })
+        .to_string();
+
+        let resp: MineResponse = serde_json::from_str(&body).unwrap();
+        let c = &resp.candidates[0];
+        assert_eq!(c.threshold["off_hours_pct"], 0.5);
+        assert_eq!(
+            c.flipped_examples[0].correlation_id.as_deref(),
+            Some("cid-1")
+        );
+    }
+
+    #[test]
+    fn mine_response_decodes_pre_evidence_engine() {
+        let body = serde_json::json!({
+            "corpus_size": 1,
+            "candidates_dropped": 0,
+            "evaluated_in_ms": 1,
+            "candidates": [{
+                "id": "candidate-1",
+                "kind": "after_hours",
+                "rule_name": "after_hours_bulk_export_v1",
+                "one_liner": "off-hours bulk_export",
+                "brain_enriched": false,
+                "rego_body": "package clavenar.authz\nimport rego.v1\n",
+                "compile_ok": true,
+                "evidence_count": 1,
+                "score": 1.0,
+                "lab_replay": {
+                    "allow_to_deny": 0,
+                    "allow_to_yellow": 1,
+                    "deny_to_allow": 0,
+                    "deny_to_yellow": 0,
+                    "yellow_to_allow": 0,
+                    "yellow_to_deny": 0,
+                    "unchanged": 0,
+                    "catalog_regressions": 0
+                }
+            }]
+        })
+        .to_string();
+
+        let resp: MineResponse = serde_json::from_str(&body).unwrap();
+        assert!(resp.candidates[0].threshold.is_null());
+        assert!(resp.candidates[0].flipped_examples.is_empty());
     }
 }
