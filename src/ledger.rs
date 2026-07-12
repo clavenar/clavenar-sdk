@@ -1007,42 +1007,6 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
-    /// `_since`-filtered companion to [`Self::audit_agent_paged_before`].
-    pub async fn audit_agent_paged_before_since(
-        &self,
-        agent_id: &str,
-        limit: usize,
-        before_seq: i64,
-        since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
-        let path = format!(
-            "audit/{}?limit={}&before={}&since={}",
-            percent_encode(agent_id),
-            limit,
-            before_seq,
-            percent_encode(&since.to_rfc3339()),
-        );
-        self.get_json(&path).await
-    }
-
-    /// `_since`-filtered companion to [`Self::audit_agent_paged_after`].
-    pub async fn audit_agent_paged_after_since(
-        &self,
-        agent_id: &str,
-        limit: usize,
-        after_seq: i64,
-        since: chrono::DateTime<chrono::Utc>,
-    ) -> Result<Vec<LedgerEntry>, ClavenarError> {
-        let path = format!(
-            "audit/{}?limit={}&after={}&since={}",
-            percent_encode(agent_id),
-            limit,
-            after_seq,
-            percent_encode(&since.to_rfc3339()),
-        );
-        self.get_json(&path).await
-    }
-
     pub async fn audit_agent_paged_filtered(
         &self,
         agent_id: &str,
@@ -1315,22 +1279,7 @@ impl LedgerClient {
     /// drift into one drift-descending list. The server clamps `limit` to
     /// [1, 1000]; the window defaults to week-over-week (`recent_days=7`,
     /// `baseline_days=14`). Internal (mTLS) surface, like [`Self::hunt`].
-    pub async fn fleet_behavioral_diff(
-        &self,
-        baseline_days: u32,
-        recent_days: u32,
-        limit: i64,
-    ) -> Result<FleetBehavioralDiff, ClavenarError> {
-        self.fleet_behavioral_diff_scoped(
-            baseline_days,
-            recent_days,
-            limit,
-            FleetBehavioralDiffScope::default(),
-        )
-        .await
-    }
-
-    /// Tenant-scoped variant of [`Self::fleet_behavioral_diff`].
+    /// `tenant: None` reads fleet-wide.
     pub async fn fleet_behavioral_diff_for_tenant(
         &self,
         baseline_days: u32,
@@ -1350,7 +1299,7 @@ impl LedgerClient {
         .await
     }
 
-    /// Scoped variant of [`Self::fleet_behavioral_diff`]. A demo-session
+    /// Scoped variant of [`Self::fleet_behavioral_diff_for_tenant`]. A demo-session
     /// token takes precedence over tenant scope on the ledger side.
     pub async fn fleet_behavioral_diff_scoped(
         &self,
@@ -1378,17 +1327,8 @@ impl LedgerClient {
     /// signal mix, and the model identity attested in each window's on-chain
     /// evidence). `cutover` pins the upgrade instant; `None` defaults to
     /// `now - window_hours` (prior-vs-recent). Internal (mTLS) surface, like
-    /// [`Self::fleet_behavioral_diff`].
-    pub async fn model_upgrade_canary(
-        &self,
-        cutover: Option<&str>,
-        window_hours: u32,
-    ) -> Result<ModelUpgradeCanary, ClavenarError> {
-        self.model_upgrade_canary_for_tenant(cutover, window_hours, None)
-            .await
-    }
-
-    /// Tenant-scoped variant of [`Self::model_upgrade_canary`].
+    /// [`Self::fleet_behavioral_diff_for_tenant`].
+    /// `tenant: None` reads fleet-wide.
     pub async fn model_upgrade_canary_for_tenant(
         &self,
         cutover: Option<&str>,
@@ -1569,22 +1509,13 @@ impl LedgerClient {
     /// [`Self::regulatory_export`] with
     /// [`RegulatoryExportOptions::include_compliance`].
     ///
+    /// The console threads demo visitors and tenant-authenticated
+    /// operators to their own evidence rows via `scope`;
+    /// `ComplianceEvidenceScope::default()` reads deployment-wide.
+    ///
     /// An empty window returns `200` with every control `no_data`; an
     /// inverted or malformed window maps to `400`
     /// (`ClavenarError::Server`).
-    pub async fn compliance_evidence(
-        &self,
-        from: &chrono::DateTime<chrono::Utc>,
-        to: &chrono::DateTime<chrono::Utc>,
-    ) -> Result<ComplianceRegister, ClavenarError> {
-        self.compliance_evidence_scoped(from, to, ComplianceEvidenceScope::default())
-            .await
-    }
-
-    /// Scoped variant of [`Self::compliance_evidence`]. The console uses
-    /// this to keep demo visitors and tenant-authenticated operators on
-    /// their own evidence rows while preserving the legacy unscoped call
-    /// for single-tenant deployments.
     pub async fn compliance_evidence_scoped(
         &self,
         from: &chrono::DateTime<chrono::Utc>,
@@ -2697,7 +2628,10 @@ mod tests {
         let client = LedgerClient::new(format!("http://{addr}/")).unwrap();
         let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
         let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
-        let register = client.compliance_evidence(&from, &to).await.unwrap();
+        let register = client
+            .compliance_evidence_scoped(&from, &to, ComplianceEvidenceScope::default())
+            .await
+            .unwrap();
         assert_eq!(register.schema_version, "1");
         assert_eq!(register.controls.len(), 1);
         assert_eq!(register.controls[0].status, EvidenceStatus::Satisfied);
