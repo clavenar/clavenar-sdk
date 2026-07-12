@@ -48,6 +48,7 @@ mod agents;
 mod brain;
 mod client;
 mod error;
+pub mod hil;
 mod http;
 mod ledger;
 mod pack;
@@ -64,6 +65,12 @@ pub use agents::{
 pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
+pub use hil::{
+    ApprovalStats, ApproverStat, AuthProxyResponse, ChannelStatus, DECIDED_BY_HEADER,
+    DEMO_SESSION_COOKIE, DecideRequest, Decision, DecisionLinkPending, DecisionLinkVerify,
+    HIL_SESSION_COOKIE, HilClient, HilDecideCredential, PendingRequest, PendingStatus,
+    UserIdentities,
+};
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
     AnchorSummary, AuditFilterParams, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline,

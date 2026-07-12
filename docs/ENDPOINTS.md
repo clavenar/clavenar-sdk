@@ -2,7 +2,8 @@
 
 Per-client method → HTTP route → return type. One table per client,
 ordered against the source: `src/client.rs`, `src/ledger.rs`,
-`src/agents.rs`, `src/policies.rs`, `src/brain.rs`, `src/sim.rs`.
+`src/agents.rs`, `src/policies.rs`, `src/brain.rs`, `src/sim.rs`,
+`src/hil.rs`.
 
 Every method returns `Result<T, ClavenarError>`; the **Returns** column
 names the `Ok` type `T`. Routes are relative to each client's
@@ -189,6 +190,39 @@ without `--hil-url`.
 
 ---
 
+## `HilClient` — human-in-the-loop `/pending` + `/decide` (`src/hil.rs`)
+
+| Method | HTTP route | Returns |
+|---|---|---|
+| `create_pending(body)` | `POST /pending` | `PendingRequest` |
+| `list_pending()` / `list_pending_scoped(jwt)` | `GET /pending?status=pending[&tenant=]` | `Vec<PendingRequest>` |
+| `list_auto_approved()` / `list_auto_approved_scoped(jwt)` | `GET /pending?status=approved[&tenant=]`, filtered to `decided_by = system:policy-tier` | `Vec<PendingRequest>` |
+| `verify_decision_link(token)` | `POST /decision-link/verify` | `DecisionLinkVerify` |
+| `patch_incident_summary(id, summary)` | `PATCH /pending/{id}/incident` | `PendingRequest` |
+| `assign(id, assigned_to, pool)` | `POST /pending/{id}/assign` | `PendingRequest` |
+| `notifications_config()` | `GET /notifications/config` | `ChannelStatus` |
+| `notifications_test()` | `POST /notifications/test` | `ChannelStatus` |
+| `get_pending_by_correlation(cid)` | `GET /pending/by-correlation/{cid}` | `Option<PendingRequest>` (`404` → `None`) |
+| `approvals_stats(window)` / `approvals_stats_scoped(window, jwt)` | `GET /approvals/stats?window=[&tenant=]` | `ApprovalStats` |
+| `stream_pending()` / `stream_pending_scoped(jwt)` | `GET /pending/stream[?tenant=]` (SSE) | raw `reqwest::Response` |
+| `decide(id, decision, decided_by, reason, modified_payload, approver_assertion, credential, decided_via)` | `POST /decide/{id}` | `PendingRequest` |
+| `auth_proxy_post(sub_path, body, hil_cookie)` | `POST /auth/{sub_path}` | `AuthProxyResponse` (opaque body + `Set-Cookie` values) |
+| `identities_upsert(bearer, oidc_sub, slack, teams)` | `POST /identities/upsert` | `UserIdentities` |
+| `identities_get(bearer, oidc_sub)` | `GET /identities/{oidc_sub}` | `Option<UserIdentities>` (`404` → `None`) |
+| `identities_unlink_slack(bearer, oidc_sub)` / `identities_unlink_teams(...)` | `DELETE /identities/{oidc_sub}/{channel}` | `bool` (unwraps `{ cleared }`) |
+
+Does **not** use `decode_response`: every non-2xx surfaces as
+`Server { status, body }` so callers can branch per status (404 "no
+longer pending", 409 "already decided", 422 "action invalid in this
+state"). `_scoped` variants forward a demo-session JWT as the
+`clavenar_demo_session` cookie; `with_tenant` stamps `?tenant=` on
+reads and the `tenant` body field on `/decide`. `decide`'s credential
+is a `HilDecideCredential` — WebAuthn session cookie, trusted-caller
+bearer (+ `x-clavenar-decided-by` stamp header), or demo-session JWT.
+
+---
+
 _Re-verify against `src/client.rs`, `src/ledger.rs`, `src/agents.rs`,
-`src/policies.rs`, `src/brain.rs`, `src/sim.rs`, and the shared
-`decode_response` / `percent_encode` / `parse_base_url` in `src/http.rs`._
+`src/policies.rs`, `src/brain.rs`, `src/sim.rs`, `src/hil.rs`, and the
+shared `decode_response` / `percent_encode` / `parse_base_url` in
+`src/http.rs`._
