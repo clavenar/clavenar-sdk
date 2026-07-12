@@ -32,6 +32,7 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - `src/policies.rs` — `PoliciesClient`: list/get/create/update/activate/deactivate/delete/rollback/diff + Lab/Miner batch surfaces, typed conflict/error parsers.
 - `src/brain.rs` — `BrainClient`: aggregated-metrics `explain-pattern` only.
 - `src/sim.rs` — `SimClient`: simulator dev admin (`/status`, `/multiplier`, `/running`, `/auto-decide`, `/agents`).
+- `src/hil.rs` — `HilClient`: pending queue reads (plain + demo-session-scoped), `/decide/{id}` (via `HilDecideCredential`: session cookie / bearer+decided-by header / demo-session cookie), decision-link verify, assign/incident patches, notifications, approvals stats, `/pending/stream` SSE (raw `reqwest::Response`), identities link/unlink. Non-2xx → `Server{status,body}` so consumers keep per-status mappings (console relies on this).
 - `src/pack.rs` — Policy-Exchange signed-pack manifest + Ed25519 verify (`verify_pack`, JWKS / SPKI-PEM key loaders).
 - `src/http.rs` — `HttpProvider` trait, `StaticHttpClient`, `default_provider`, `parse_base_url`, `decode_response` (shared non-proxy status dispatch). Injection point for custom timeouts / TLS roots / hot-reloaded creds.
 - `src/error.rs` — `ClavenarError`. `tests/` — integration tests against axum mock servers. `docs/SEQUENCES.md` — five primary client-path diagrams. `docs/ENDPOINTS.md` — per-client method → HTTP route → return-type table (the route reference).
