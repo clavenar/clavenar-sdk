@@ -38,6 +38,9 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - `src/error.rs` — `ClavenarError`. `tests/` — integration tests against axum mock servers. `docs/SEQUENCES.md` — five primary client-path diagrams. `docs/ENDPOINTS.md` — per-client method → HTTP route → return-type table (the route reference).
 
 ## Conventions & invariants
+
+- After adding or updating a feature, also update the relevant `MANUAL_TESTS*` file(s) when needed.
+
 - **`rustls-tls`, not native-tls** (reqwest `default-features = false`), so a downstream `cargo install` on a fresh box needs no system OpenSSL. Same combo as clavenar-lite — keep it.
 - **Base-URL prefix is preserved** across every client: `http://gw/clavenar` lands `/clavenar/mcp`, `/clavenar/audit/...`, etc. Trailing slash optional; `parse_base_url` normalizes. Don't strip or re-root the path.
 - **One 403 envelope, one error variant.** A structured or non-JSON 403 both surface as `ClavenarError::Veto` (non-JSON → structured fields empty, body on `raw`). Never return `Decode` for a 403 — callers must not special-case the server edition.
