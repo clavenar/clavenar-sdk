@@ -54,7 +54,8 @@ Rust house rules:
 - A type in a `pub` fn signature must itself be `pub` (clippy `private_interfaces`).
 - Tests live at the bottom of the file in `#[cfg(test)] mod tests` (`items_after_test_module`).
 - `writeln!` over `write!(.., "\n")`; let-chains over nested `if let`. Doc comments: prose continuations, no leading `+ ` (clippy `doc_lazy_continuation`).
-- One logical area per commit; commit subjects start lowercase, imperative mood.
+- One logical area per commit; use imperative mood.
+- Commit subjects must start with a lowercase letter.
 
 ## Pointers
 README.md · SECURITY.md · docs/SEQUENCES.md · docs/ENDPOINTS.md
