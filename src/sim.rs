@@ -18,6 +18,7 @@
 //! not authorization and the control listener must never be public.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
@@ -83,7 +84,12 @@ pub struct SimStatus {
 pub struct SimClient {
     base_url: Url,
     http: Arc<dyn HttpProvider>,
+    request_timeout: Duration,
 }
+
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+const DEFAULT_OPERATOR: &str = "sdk:unattributed";
+const MAX_OPERATOR_BYTES: usize = 128;
 
 impl SimClient {
     /// Build a client against `base_url` (e.g.
@@ -95,6 +101,7 @@ impl SimClient {
         Ok(Self {
             base_url: url,
             http,
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
         })
     }
 
@@ -110,6 +117,19 @@ impl SimClient {
     pub fn with_http_provider(mut self, provider: Arc<dyn HttpProvider>) -> Self {
         self.http = provider;
         self
+    }
+
+    /// Override the per-request deadline. The default is five seconds.
+    /// Zero is rejected because an unbounded or ambiguous control-plane
+    /// request is never a safe fallback.
+    pub fn with_request_timeout(mut self, timeout: Duration) -> Result<Self, ClavenarError> {
+        if timeout.is_zero() {
+            return Err(ClavenarError::InvalidConfig(
+                "simulator request timeout must be greater than zero".into(),
+            ));
+        }
+        self.request_timeout = timeout;
+        Ok(self)
     }
 
     /// Read-only access to the configured base URL. Mirrors
@@ -129,7 +149,19 @@ impl SimClient {
     /// in place. Returns the post-update [`SimStatus`] so the caller
     /// can render the new state without a follow-up `status()` call.
     pub async fn set_multiplier(&self, multiplier: f64) -> Result<SimStatus, ClavenarError> {
-        self.post_json(
+        self.set_multiplier_as(DEFAULT_OPERATOR, multiplier).await
+    }
+
+    /// Attributed variant of [`Self::set_multiplier`]. `operator` is
+    /// audit context only; the simulator still authorizes the caller with
+    /// its mutually authenticated workload identity.
+    pub async fn set_multiplier_as(
+        &self,
+        operator: &str,
+        multiplier: f64,
+    ) -> Result<SimStatus, ClavenarError> {
+        self.post_json_as(
+            operator,
             "multiplier",
             &serde_json::json!({ "traffic_multiplier": multiplier }),
         )
@@ -140,8 +172,21 @@ impl SimClient {
     /// Returns the post-update [`SimStatus`] so the caller can render
     /// the new badge without a follow-up `status()` call.
     pub async fn set_running(&self, running: bool) -> Result<SimStatus, ClavenarError> {
-        self.post_json("running", &serde_json::json!({ "running": running }))
-            .await
+        self.set_running_as(DEFAULT_OPERATOR, running).await
+    }
+
+    /// Attributed variant of [`Self::set_running`].
+    pub async fn set_running_as(
+        &self,
+        operator: &str,
+        running: bool,
+    ) -> Result<SimStatus, ClavenarError> {
+        self.post_json_as(
+            operator,
+            "running",
+            &serde_json::json!({ "running": running }),
+        )
+        .await
     }
 
     /// `POST /auto-decide` — pause or resume the simulator's HIL
@@ -150,8 +195,21 @@ impl SimClient {
     /// answers 409 Conflict and this surfaces as
     /// [`ClavenarError::Server`] with the explanation in the body.
     pub async fn set_auto_decide(&self, enabled: bool) -> Result<SimStatus, ClavenarError> {
-        self.post_json("auto-decide", &serde_json::json!({ "enabled": enabled }))
-            .await
+        self.set_auto_decide_as(DEFAULT_OPERATOR, enabled).await
+    }
+
+    /// Attributed variant of [`Self::set_auto_decide`].
+    pub async fn set_auto_decide_as(
+        &self,
+        operator: &str,
+        enabled: bool,
+    ) -> Result<SimStatus, ClavenarError> {
+        self.post_json_as(
+            operator,
+            "auto-decide",
+            &serde_json::json!({ "enabled": enabled }),
+        )
+        .await
     }
 
     /// `POST /agents` — mint and spawn `count` transient agents of
@@ -162,6 +220,16 @@ impl SimClient {
         persona: &str,
         count: usize,
     ) -> Result<Vec<String>, ClavenarError> {
+        self.add_agents_as(DEFAULT_OPERATOR, persona, count).await
+    }
+
+    /// Attributed variant of [`Self::add_agents`].
+    pub async fn add_agents_as(
+        &self,
+        operator: &str,
+        persona: &str,
+        count: usize,
+    ) -> Result<Vec<String>, ClavenarError> {
         // The simulator returns `{ spawned: [...] }`; project to the
         // inner Vec so callers don't carry the wrapper.
         #[derive(Deserialize)]
@@ -169,7 +237,8 @@ impl SimClient {
             spawned: Vec<String>,
         }
         let w: Wrap = self
-            .post_json(
+            .post_json_as(
+                operator,
                 "agents",
                 &serde_json::json!({ "persona": persona, "count": count }),
             )
@@ -185,31 +254,92 @@ impl SimClient {
             .base_url
             .join(path)
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
-        let resp = self.http.client().get(endpoint).send().await?;
+        let resp = self
+            .http
+            .client()
+            .get(endpoint)
+            .timeout(self.request_timeout)
+            .send()
+            .await?;
         let status = resp.status();
         let body = resp.text().await?;
         decode_response(status, body)
     }
 
-    async fn post_json<B: Serialize, T: serde::de::DeserializeOwned>(
+    async fn post_json_as<B: Serialize, T: serde::de::DeserializeOwned>(
         &self,
+        operator: &str,
         path: &str,
         body: &B,
     ) -> Result<T, ClavenarError> {
+        validate_operator(operator)?;
         let endpoint = self
             .base_url
             .join(path)
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
-        let resp = self.http.client().post(endpoint).json(body).send().await?;
+        let resp = self
+            .http
+            .client()
+            .post(endpoint)
+            .header("x-clavenar-operator", operator)
+            .json(body)
+            .timeout(self.request_timeout)
+            .send()
+            .await?;
         let status = resp.status();
         let body = resp.text().await?;
         decode_response(status, body)
     }
 }
 
+fn validate_operator(operator: &str) -> Result<(), ClavenarError> {
+    if operator.is_empty()
+        || operator.len() > MAX_OPERATOR_BYTES
+        || !operator.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(ClavenarError::InvalidConfig(format!(
+            "simulator operator must be 1..={MAX_OPERATOR_BYTES} visible ASCII bytes"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
+    use axum::extract::State;
+    use axum::http::HeaderMap;
+    use axum::routing::{get, post};
+    use axum::{Json, Router};
+
     use super::*;
+
+    fn status_payload() -> serde_json::Value {
+        serde_json::json!({
+            "traffic_multiplier": 1.0,
+            "running": false,
+            "agents": [],
+            "stats": {
+                "sent": 0,
+                "ok": 0,
+                "denied": 0,
+                "error": 0,
+                "success_pct": 0.0,
+                "p50_ms": null,
+                "p95_ms": null
+            }
+        })
+    }
+
+    async fn spawn_test_server(app: Router) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{address}/"), task)
+    }
 
     #[test]
     fn sim_status_decodes_canonical_payload() {
@@ -293,5 +423,70 @@ mod tests {
         let parsed: SimStats = serde_json::from_str(raw).unwrap();
         assert_eq!(parsed.sent, 0);
         assert!(parsed.p50_ms.is_none());
+    }
+
+    #[test]
+    fn simulator_operator_is_bounded_visible_ascii() {
+        assert!(validate_operator("alice@example.test").is_ok());
+        assert!(validate_operator("").is_err());
+        assert!(validate_operator("contains space").is_err());
+        assert!(validate_operator("contains\nnewline").is_err());
+        assert!(validate_operator(&"a".repeat(MAX_OPERATOR_BYTES)).is_ok());
+        assert!(validate_operator(&"a".repeat(MAX_OPERATOR_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn simulator_request_timeout_rejects_zero() {
+        let client = SimClient::new("http://simulator:9100/").unwrap();
+        assert!(client.with_request_timeout(Duration::ZERO).is_err());
+    }
+
+    #[tokio::test]
+    async fn attributed_mutation_forwards_operator_header() {
+        async fn capture(
+            State(seen): State<Arc<Mutex<Option<String>>>>,
+            headers: HeaderMap,
+        ) -> Json<serde_json::Value> {
+            *seen.lock().unwrap() = headers
+                .get("x-clavenar-operator")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            Json(status_payload())
+        }
+
+        let seen = Arc::new(Mutex::new(None));
+        let app = Router::new()
+            .route("/multiplier", post(capture))
+            .with_state(seen.clone());
+        let (base_url, server) = spawn_test_server(app).await;
+        let client = SimClient::new(base_url).unwrap();
+
+        client
+            .set_multiplier_as("test-approver", 2.0)
+            .await
+            .unwrap();
+
+        assert_eq!(seen.lock().unwrap().as_deref(), Some("test-approver"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn simulator_request_deadline_covers_read_only_calls() {
+        async fn slow_status() -> Json<serde_json::Value> {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Json(status_payload())
+        }
+
+        let app = Router::new().route("/status", get(slow_status));
+        let (base_url, server) = spawn_test_server(app).await;
+        let client = SimClient::new(base_url)
+            .unwrap()
+            .with_request_timeout(Duration::from_millis(10))
+            .unwrap();
+
+        let error = client.status().await.unwrap_err();
+
+        assert!(matches!(error, ClavenarError::Transport(ref err) if err.is_timeout()));
+        server.abort();
     }
 }

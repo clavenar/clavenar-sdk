@@ -5,6 +5,14 @@ versions track `Cargo.toml`. The crate is a path-dep (not published),
 so "released" here means "consumed by clavenar-console / clavenar-ctl
 at that version".
 
+## [Unreleased]
+
+### Added
+
+- Attributed `SimClient` mutation variants that forward a bounded
+  `X-Clavenar-Operator` audit value, plus a configurable positive request
+  deadline (five seconds by default) on simulator reads and writes.
+
 ## [0.2.0]
 
 ### Added

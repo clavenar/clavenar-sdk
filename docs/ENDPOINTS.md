@@ -179,15 +179,22 @@ drive it through the proxy.
 |---|---|---|
 | `status()` | `GET /status` | `SimStatus` |
 | `set_multiplier(multiplier)` | `POST /multiplier` | `SimStatus` |
+| `set_multiplier_as(operator, multiplier)` | `POST /multiplier` | `SimStatus` |
 | `set_running(running)` | `POST /running` | `SimStatus` |
+| `set_running_as(operator, running)` | `POST /running` | `SimStatus` |
 | `set_auto_decide(enabled)` | `POST /auto-decide` | `SimStatus` |
+| `set_auto_decide_as(operator, enabled)` | `POST /auto-decide` | `SimStatus` |
 | `add_agents(persona, count)` | `POST /agents` | `Vec<String>` (unwraps `{ spawned }`) |
+| `add_agents_as(operator, persona, count)` | `POST /agents` | `Vec<String>` (unwraps `{ spawned }`) |
 
 Outside local fixtures, inject an mTLS-capable `HttpProvider` whose workload
 identity the simulator authorizes; network placement alone is not
 authorization. Responses decode via `decode_response`;
 `set_auto_decide` returns `409` → `Server` when the simulator booted
-without `--hil-url`.
+without `--hil-url`. The `_as` methods attach a bounded
+`X-Clavenar-Operator` audit value without changing transport authorization.
+Every request has a five-second deadline by default; callers can set a
+different positive duration with `with_request_timeout`.
 
 ---
 

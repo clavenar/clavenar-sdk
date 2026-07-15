@@ -149,7 +149,11 @@ carry a typed `ConflictResponse` — recover the up-to-date row via
 `/multiplier`, `/running`, `/auto-decide`, `/agents`). Outside local
 fixtures, inject an mTLS-capable `HttpProvider` whose workload identity
 the simulator authorizes. Network placement is not authorization and the
-control listener must never be public.
+control listener must never be public. Mutating callers should use the
+`*_as(operator, ...)` variants so the simulator can attribute accepted
+controls; the operator header is audit context, never authorization. All
+simulator calls have a five-second deadline by default, configurable with
+`with_request_timeout`.
 
 ## Error model
 
