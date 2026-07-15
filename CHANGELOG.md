@@ -11,7 +11,7 @@ at that version".
 
 - Attributed `SimClient` mutation variants that forward a bounded
   `X-Clavenar-Operator` audit value, plus a configurable positive request
-  deadline (five seconds by default) on simulator reads and writes.
+  deadline (twenty seconds by default) on simulator reads and writes.
 
 ## [0.2.0]
 

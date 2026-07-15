@@ -87,7 +87,10 @@ pub struct SimClient {
     request_timeout: Duration,
 }
 
-const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
+// The simulator bounds transient-agent creation at 15 seconds. Keep the
+// client deadline above that server budget so a non-idempotent create cannot
+// complete after the caller has already reported a timeout.
+const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_OPERATOR: &str = "sdk:unattributed";
 const MAX_OPERATOR_BYTES: usize = 128;
 
@@ -119,7 +122,7 @@ impl SimClient {
         self
     }
 
-    /// Override the per-request deadline. The default is five seconds.
+    /// Override the per-request deadline. The default is twenty seconds.
     /// Zero is rejected because an unbounded or ambiguous control-plane
     /// request is never a safe fallback.
     pub fn with_request_timeout(mut self, timeout: Duration) -> Result<Self, ClavenarError> {
@@ -439,6 +442,11 @@ mod tests {
     fn simulator_request_timeout_rejects_zero() {
         let client = SimClient::new("http://simulator:9100/").unwrap();
         assert!(client.with_request_timeout(Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn default_request_deadline_exceeds_server_creation_budget() {
+        assert!(DEFAULT_REQUEST_TIMEOUT > Duration::from_secs(15));
     }
 
     #[tokio::test]

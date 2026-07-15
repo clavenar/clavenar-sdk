@@ -193,7 +193,7 @@ authorization. Responses decode via `decode_response`;
 `set_auto_decide` returns `409` → `Server` when the simulator booted
 without `--hil-url`. The `_as` methods attach a bounded
 `X-Clavenar-Operator` audit value without changing transport authorization.
-Every request has a five-second deadline by default; callers can set a
+Every request has a twenty-second deadline by default; callers can set a
 different positive duration with `with_request_timeout`.
 
 ---
