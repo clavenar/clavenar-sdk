@@ -167,9 +167,14 @@ parsers (no network call):
 |---|---|---|
 | `explain_pattern(req)` | `POST /explain-pattern` | `ExplainPatternResponse` |
 
-Sends `Authorization: Bearer` when set; decodes via `decode_response`.
-The brain's `/inspect` hot-path surface is deliberately not exposed —
-drive it through the proxy.
+This is a loopback local/test compatibility client. In TLS production,
+`/explain-pattern` lives on Brain's mTLS application port and accepts only the
+exact `spiffe://clavenar.local/service/policy-engine` caller. The optional
+bearer header does not authorize that route, and the generic SDK does not
+acquire the policy-engine identity; production enrichment uses the
+policy-engine's internal workload-identity client. Responses decode via
+`decode_response`. The brain's `/inspect` hot-path surface is deliberately not
+exposed — drive it through the proxy.
 
 ---
 

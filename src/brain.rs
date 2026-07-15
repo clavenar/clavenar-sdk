@@ -1,9 +1,9 @@
 //! Typed client for `clavenar-brain`.
 //!
-//! Currently exposes a single endpoint: `POST /explain-pattern`,
-//! consumed by the policy-engine miner (Phase 7 Self-Learn) and by
-//! any external tooling that wants a human-readable explanation of
-//! a pattern detected in their own traffic.
+//! Currently exposes a single endpoint: `POST /explain-pattern`, retained for
+//! loopback local/test compatibility. In TLS production that route accepts
+//! only the exact policy-engine workload identity; the policy-engine miner
+//! uses its own workload-identity-aware client rather than this generic SDK.
 //!
 //! The brain's `/inspect` surface is *not* exposed here — that's the
 //! proxy's hot-path contract, not something the SDK should encourage
@@ -73,6 +73,9 @@ impl BrainClient {
         self
     }
 
+    /// Attach the legacy bearer header used by local fixtures. Brain's
+    /// production `/explain-pattern` route authorizes the exact policy-engine
+    /// mTLS identity; a bearer token does not satisfy that boundary.
     pub fn with_bearer(mut self, token: impl Into<String>) -> Self {
         self.bearer = Some(token.into());
         self

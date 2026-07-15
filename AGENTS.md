@@ -2,9 +2,11 @@
 # clavenar-sdk — typed async Rust client for the Clavenar proxy + control plane
 
 Wraps the proxy `POST /mcp` surface and the ledger / identity / policy /
-brain / simulator HTTP APIs with typed verdicts so an integrator doesn't
-relearn the wire contract per service. Consumed by clavenar-console,
-clavenar-ctl, and external integrators. Library crate — no binary.
+simulator HTTP APIs with typed verdicts so an integrator doesn't relearn the
+wire contract per service. A legacy Brain explain client remains for loopback
+fixtures but is not a production external surface. Consumed by
+clavenar-console, clavenar-ctl, and external integrators. Library crate — no
+binary.
 
 ## Build, test, lint
 ```bash
@@ -21,7 +23,10 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - `ClavenarClient::builder(base_url)?.auth(Auth::Bearer(..)).build()?` → `call_tool` / `send_jsonrpc` against `POST /mcp` (proxy / clavenar-lite, e.g. `:8088`).
 - `LedgerClient::new(base_url)?` → `audit_correlation` / `audit_agent*` / `verify` / `regulatory_export` (ledger, e.g. `:8083`).
 - `AgentsClient::new(base_url)?.with_bearer(tok)` → `/agents` lifecycle CRUD (identity, e.g. `:8086`).
-- `PoliciesClient`, `BrainClient`, `SimClient` → policy-engine, brain `POST /explain-pattern`, simulator admin.
+- `PoliciesClient`, `SimClient` → policy-engine and simulator admin. `BrainClient`
+  retains a typed `POST /explain-pattern` compatibility client for loopback
+  fixtures only; production Brain accepts the exact policy-engine workload
+  identity, not a generic SDK caller or bearer token.
 - `verify_pack(..)` (`pack` module) → Ed25519 signed-policy-pack verification.
 
 ## Layout
@@ -30,7 +35,8 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - `src/ledger.rs` — `LedgerClient` + the large set of typed row/report mirrors (audit, lifecycle, exports, regulatory bundle, hunt/canary/baseline analytics), plus a write path `log` (`POST /log` — append a forensic row; the server computes the chain) and tenant admin (`tombstone_tenant`; budget/offboard live on `AgentsClient`). The audit/verify surface is no longer strictly read-only.
 - `src/agents.rs` — `AgentsClient`: identity enrollment + state-machine transitions, certification, grant/envelope types.
 - `src/policies.rs` — `PoliciesClient`: list/get/create/update/activate/deactivate/delete/rollback/diff + Lab/Miner batch surfaces, typed conflict/error parsers.
-- `src/brain.rs` — `BrainClient`: aggregated-metrics `explain-pattern` only.
+- `src/brain.rs` — `BrainClient`: aggregated-metrics `explain-pattern` local/test
+  compatibility client; not a production external integration surface.
 - `src/sim.rs` — `SimClient`: simulator dev admin (`/status`, `/multiplier`, `/running`, `/auto-decide`, `/agents`).
 - `src/hil.rs` — `HilClient`: pending queue reads (plain + demo-session-scoped), `/decide/{id}` (via `HilDecideCredential`: session cookie / bearer+decided-by header / demo-session cookie), decision-link verify, assign/incident patches, notifications, approvals stats, `/pending/stream` SSE (raw `reqwest::Response`), identities link/unlink. Non-2xx → `Server{status,body}` so consumers keep per-status mappings (console relies on this).
 - `src/pack.rs` — Policy-Exchange signed-pack manifest + Ed25519 verify (`verify_pack`, JWKS / SPKI-PEM key loaders).

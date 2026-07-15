@@ -28,7 +28,7 @@ Lab + Miner with typed-error lift — live in
 | `LedgerClient`          | clavenar-ledger HTTP API                     | typed `LedgerEntry`, `LifecycleRow`, `VerifyResult`, `ExportRecord`, regulatory bundle bytes |
 | `AgentsClient`          | clavenar-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
 | `PoliciesClient`        | clavenar-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
-| `BrainClient`           | clavenar-brain `POST /explain-pattern`       | typed `ExplainPatternResponse` (`one_liner`, `rationale`); aggregated-metrics input only |
+| `BrainClient`           | loopback compatibility for clavenar-brain `POST /explain-pattern` | typed `ExplainPatternResponse` (`one_liner`, `rationale`); production calls belong to policy-engine's exact mTLS identity |
 | `SimClient`             | clavenar-simulator authenticated control API | typed `SimStatus`, `SimAgentRecord`, `SimStats`                           |
 | `ClavenarError::Veto`     | structured 403 envelope (or non-JSON fallback) | `intent_category`, `reasons`, `review_reasons`, `correlation_id`, `raw` (`layer` etc. via `raw`) |
 | `Auth`                  | `ClavenarClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
@@ -36,6 +36,13 @@ Lab + Miner with typed-error lift — live in
 A path prefix on the base URL is preserved across every client — pass
 `http://gateway/clavenar` and requests land at `http://gateway/clavenar/mcp`
 etc. Trailing slash optional; the SDK normalizes either form.
+
+`BrainClient` is retained for local/test compatibility, not as an external
+production API. In TLS deployments, Brain serves `/explain-pattern` on its
+mTLS application port and accepts only
+`spiffe://clavenar.local/service/policy-engine`; bearer auth does not satisfy
+that boundary. The policy-engine uses its own workload-identity-aware internal
+client. This SDK does not mint or impersonate that service identity.
 
 ## Quick start
 

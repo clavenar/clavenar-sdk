@@ -15,7 +15,7 @@ projection layer, ordered against the actual source: `src/client.rs`,
 | LedgerC | `LedgerClient` — `/audit/*`, `/verify`, `/exports`, `/audit/replay/corpus`. | `src/ledger.rs` |
 | AgentsC | `AgentsClient` — `/agents` + `/agents/{id}/<verb>` lifecycle. | `src/agents.rs` |
 | PoliciesC | `PoliciesClient` — `/policies/*`, `/policies/evaluate-batch`, `/policies/mine`, `/policies/templates*`. | `src/policies.rs` |
-| BrainC | `BrainClient` — single-endpoint client for `POST /explain-pattern`. | `src/brain.rs` |
+| BrainC | `BrainClient` — loopback local/test compatibility client for `POST /explain-pattern`; not the production exact-mTLS policy-engine caller. | `src/brain.rs` |
 | HttpP | `HttpProvider` — per-request `reqwest::Client` source. `StaticHttpClient` wraps one Client; hot-reload integrators return a fresh one per call. | `src/http.rs::HttpProvider`, `StaticHttpClient` |
 | Decoder | `decode_response` + `parse_veto` — status-code dispatch to `ClavenarError` arms. | `src/http.rs`, `src/client.rs` |
 | Server | The clavenar service the client targets — proxy / ledger / identity / policy-engine / brain. | external |
@@ -386,7 +386,9 @@ sequenceDiagram
   candidates with template one-liners. The SDK does not enforce
   this — `ask_brain=true` against an unconfigured Brain produces
   candidates that silently fall back to the template, which is
-  the documented contract.
+  the documented contract. In production, this service-to-service step uses
+  policy-engine's current exact workload identity; it does not dispatch
+  through the generic SDK `BrainClient`.
 - The Miner's accepted candidates are NOT auto-installed. The
   operator clicks Accept in the console; the console POSTs
   `MineCandidate.rego_body` as a normal `CreatePolicyRequest`
@@ -463,7 +465,9 @@ diagrams above lean on.
 - Policy management: `src/policies.rs::PoliciesClient`
 - Typed error lifters: `src/policies.rs::parse_batch_error`,
   `parse_mine_error`, and `PoliciesClient::parse_conflict`
-- Brain explain-pattern: `src/brain.rs::BrainClient::explain_pattern`
+- Brain explain-pattern compatibility client:
+  `src/brain.rs::BrainClient::explain_pattern` (loopback local/test only;
+  production uses policy-engine's exact workload identity)
 - Simulator control: `src/sim.rs::SimClient`
 - HTTP plumbing: `src/http.rs` (`HttpProvider`,
   `StaticHttpClient`, `default_provider`, `parse_base_url`,
