@@ -29,7 +29,7 @@ Lab + Miner with typed-error lift — live in
 | `AgentsClient`          | clavenar-identity `/agents` lifecycle surface | typed `AgentRecord`, `AgentCreated`, `LifecycleResponse`; full CRUD + state-machine transitions |
 | `PoliciesClient`        | clavenar-policy-engine console-policy mgmt   | typed `PolicyRow` / `PolicyVersionRow` / `PolicyDetail` / `MutationResponse` |
 | `BrainClient`           | clavenar-brain `POST /explain-pattern`       | typed `ExplainPatternResponse` (`one_liner`, `rationale`); aggregated-metrics input only |
-| `SimClient`             | clavenar-simulator admin HTTP                | typed `SimStatus`, `SimAgentRecord`, `SimStats` (dev-only — no auth)     |
+| `SimClient`             | clavenar-simulator authenticated control API | typed `SimStatus`, `SimAgentRecord`, `SimStats`                           |
 | `ClavenarError::Veto`     | structured 403 envelope (or non-JSON fallback) | `intent_category`, `reasons`, `review_reasons`, `correlation_id`, `raw` (`layer` etc. via `raw`) |
 | `Auth`                  | `ClavenarClient` construction                | `None` (open access) or `Bearer(String)`. mTLS / OIDC / SPIFFE: see roadmap |
 
@@ -145,10 +145,11 @@ activate / deactivate / delete / rollback / diff). 409s on mutations
 carry a typed `ConflictResponse` — recover the up-to-date row via
 `PoliciesClient::parse_conflict(&body)`.
 
-`SimClient` wraps the simulator's dev-only admin surface (`/status`,
-`/multiplier`, `/running`, `/auto-decide`, `/agents`). No auth — the
-simulator's admin port is meant to live on an internal compose
-network, never exposed to the public.
+`SimClient` wraps the simulator's control surface (`/status`,
+`/multiplier`, `/running`, `/auto-decide`, `/agents`). Outside local
+fixtures, inject an mTLS-capable `HttpProvider` whose workload identity
+the simulator authorizes. Network placement is not authorization and the
+control listener must never be public.
 
 ## Error model
 

@@ -47,7 +47,10 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - **`ClavenarError` and `Auth` are `#[non_exhaustive]`** — new variants (mTLS / OIDC / SPIFFE auth) are non-breaking; consumer match arms need `_ => ...`.
 - **`correlation_id` is `#[serde(default)]`** on `LedgerEntry` — pre-correlation-id rows deserialize cleanly to `None`. Don't make it required.
 - **Clients are cheap to clone** (inner `Arc<dyn HttpProvider>`). Add new shared state behind the `Arc`, not by value.
-- **`SimClient` is dev-only, unauthenticated** — its admin port is meant to live on an internal compose network, never public. Don't add prod auth assumptions to it.
+- **`SimClient` requires an authenticated transport outside local fixtures.** Inject an
+  mTLS-capable [`HttpProvider`] whose workload identity is authorized by the simulator;
+  network placement alone is not authorization and the control listener must never be
+  public.
 - **`pack.rs` reuses the regulatory-export manifest signature primitive** (Ed25519 via `ed25519-dalek`) — not new crypto. Keep verification aligned with the manifest path.
 
 Rust house rules:

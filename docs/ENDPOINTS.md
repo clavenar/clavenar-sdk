@@ -183,8 +183,9 @@ drive it through the proxy.
 | `set_auto_decide(enabled)` | `POST /auto-decide` | `SimStatus` |
 | `add_agents(persona, count)` | `POST /agents` | `Vec<String>` (unwraps `{ spawned }`) |
 
-No auth — the admin surface relies on network isolation; do not deploy
-against a production simulator. Decodes via `decode_response`;
+Outside local fixtures, inject an mTLS-capable `HttpProvider` whose workload
+identity the simulator authorizes; network placement alone is not
+authorization. Responses decode via `decode_response`;
 `set_auto_decide` returns `409` → `Server` when the simulator booted
 without `--hil-url`.
 

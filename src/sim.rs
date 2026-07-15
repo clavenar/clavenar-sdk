@@ -12,10 +12,10 @@
 //! * [`SimClient::add_agents`] — `POST /agents`. Mints a transient
 //!   `<persona>-tN` agent and spawns its traffic loop.
 //!
-//! The simulator's admin surface has no auth — same dev-only posture
-//! as the CA-private-key bind mount. The console relies on network
-//! isolation (compose internal network) for access control. **Do not
-//! deploy this client against a production simulator.**
+//! The simulator control surface requires a mutually authenticated
+//! transport outside local fixtures. Callers inject an [`HttpProvider`]
+//! carrying the authorized workload identity; network placement alone is
+//! not authorization and the control listener must never be public.
 
 use std::sync::Arc;
 
