@@ -45,6 +45,9 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 
 ## Conventions & invariants
 
+- **Formatting is an owning-CI gate.** Run `cargo fmt --all -- --check`
+  before pushing Rust changes; CI runs it before check, test, and clippy.
+
 - After adding or updating a feature, also update the relevant `MANUAL_TESTS*` file(s) when needed.
 
 - **`rustls-tls`, not native-tls** (reqwest `default-features = false`), so a downstream `cargo install` on a fresh box needs no system OpenSSL. Same combo as clavenar-lite — keep it.
