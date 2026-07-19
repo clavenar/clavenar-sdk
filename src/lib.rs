@@ -66,9 +66,10 @@ pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use hil::{
-    ApprovalStats, ApproverStat, AuthProxyResponse, ChannelStatus, DECISION_PRINCIPAL_HEADER,
-    DEMO_SESSION_COOKIE, DecideRequest, Decision, DecisionLinkPending, DecisionLinkVerify,
-    DecisionPrincipalMethod, HIL_SESSION_COOKIE, HilClient, HilDecideCredential, PendingRequest,
+    ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,
+    DECISION_PRINCIPAL_HEADER, DEMO_SESSION_COOKIE, DecideRequest, Decision, DecisionLinkPending,
+    DecisionLinkVerify, DecisionPrincipalMethod, HIL_SESSION_COOKIE, HilClient,
+    HilDecideCredential, MODIFICATION_DIFF_CONTRACT, ModificationDiff, PendingRequest,
     PendingStatus, TENANT_SCOPE_HEADER, UserIdentities,
 };
 pub use http::{HttpProvider, StaticHttpClient};

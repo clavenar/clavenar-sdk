@@ -36,6 +36,33 @@ pub const DECISION_PRINCIPAL_HEADER: &str = "x-clavenar-decision-principal";
 /// browser query/body values never populate it directly.
 pub const TENANT_SCOPE_HEADER: &str = "x-clavenar-tenant-scope";
 
+pub const MODIFICATION_DIFF_CONTRACT: &str = "clavenar.hil.modification-diff/v1";
+
+/// Versioned allowlist of existing scalar argument leaves to replace. Paths
+/// are object-key vectors relative to `params.arguments`, not JSON Pointers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModificationDiff {
+    pub contract: String,
+    pub replacements: Vec<ArgumentScalarReplacement>,
+}
+
+impl ModificationDiff {
+    pub fn v1(replacements: Vec<ArgumentScalarReplacement>) -> Self {
+        Self {
+            contract: MODIFICATION_DIFF_CONTRACT.to_string(),
+            replacements,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ArgumentScalarReplacement {
+    pub path: Vec<String>,
+    pub value: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum DecisionPrincipalMethod {
@@ -97,11 +124,18 @@ pub struct PendingRequest {
     pub decided_by: Option<String>,
     #[serde(default)]
     pub decision_reason: Option<String>,
-    /// Present when an admin chose `Decision::Modify` and supplied a
-    /// rewrite, so HIL responses round-trip cleanly through
-    /// [`HilClient::decide`].
+    /// Historical arbitrary replacement body. New HIL versions reject this
+    /// field; it remains readable so old rows fail closed downstream.
     #[serde(default)]
     pub modified_payload: Option<serde_json::Value>,
+    #[serde(default)]
+    pub modification_diff: Option<ModificationDiff>,
+    #[serde(default)]
+    pub original_payload_digest: Option<String>,
+    #[serde(default)]
+    pub reviewed_payload_digest: Option<String>,
+    #[serde(default)]
+    pub candidate_execution_payload_digest: Option<String>,
     /// `clavenar-sandbox` static-analysis report computed by the
     /// proxy before the row was created. Carries operation_class,
     /// severity, targets, summary, predicted_changes. Opaque JSON to
@@ -192,11 +226,11 @@ pub struct DecideRequest {
     pub decided_by: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
-    /// Required when `decision == Modify`; HIL rejects the request with
-    /// 400 otherwise. Skipped from the wire when None so plain
-    /// approve/deny calls match the original shape.
+    /// Required when `decision == Modify`; HIL rejects absent, malformed,
+    /// unbounded, or non-allowlisted diffs. The legacy whole-payload field is
+    /// intentionally absent from this request type.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub modified_payload: Option<serde_json::Value>,
+    pub modification_diff: Option<ModificationDiff>,
     /// Per-decision approver claim. HIL's bearer-trust modes
     /// (oidc / basic-admin / disabled) forward this verbatim onto the
     /// audit row. The webauthn cookie path ignores any value here and
@@ -261,9 +295,7 @@ pub struct DecisionLinkPending {
 pub enum Decision {
     Approve,
     Deny,
-    /// "Approve with rewrite" — the proxy will forward the
-    /// admin-supplied `modified_payload` upstream instead of the
-    /// original.
+    /// Approve with a typed bounded scalar-argument diff.
     Modify,
 }
 
@@ -624,7 +656,7 @@ impl HilClient {
     }
 
     /// `POST /decide/{id}` with `decision=approve|deny|modify`.
-    /// For `Modify`, `modified_payload` is required (HIL returns 400 if
+    /// For `Modify`, `modification_diff` is required (HIL returns 400 if
     /// absent); pass `None` for plain approve/deny.
     ///
     /// `credential` selects which trust path is presented to HIL — see
@@ -642,7 +674,7 @@ impl HilClient {
         decision: Decision,
         decided_by: &str,
         reason: Option<String>,
-        modified_payload: Option<serde_json::Value>,
+        modification_diff: Option<ModificationDiff>,
         approver_assertion: Option<serde_json::Value>,
         credential: Option<HilDecideCredential<'_>>,
         decided_via: Option<&str>,
@@ -652,7 +684,7 @@ impl HilClient {
             decision,
             decided_by: decided_by.to_owned(),
             reason,
-            modified_payload,
+            modification_diff,
             approver_assertion,
             decided_via: decided_via.map(str::to_owned),
             // Retained only for the explicit auth-disabled compatibility
@@ -1044,7 +1076,7 @@ mod tests {
             decision: Decision::Approve,
             decided_by: "clavenar-console".into(),
             reason: None,
-            modified_payload: None,
+            modification_diff: None,
             approver_assertion: None,
             decided_via: None,
             tenant: None,
@@ -1052,28 +1084,33 @@ mod tests {
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"decision\":\"approve\""));
         assert!(!json.contains("\"reason\""));
-        // Plain approve must not leak `modified_payload` onto the
+        // Plain approve must not leak `modification_diff` onto the
         // wire — HIL distinguishes "approve+drop_rewrite" from "modify"
         // by the absence of the field, so we verify it's not there.
-        assert!(!json.contains("\"modified_payload\""));
+        assert!(!json.contains("\"modification_diff\""));
         assert!(!json.contains("\"approver_assertion\""));
     }
 
     #[test]
-    fn modify_serializes_with_payload() {
+    fn modify_serializes_with_typed_diff() {
         let body = DecideRequest {
             decision: Decision::Modify,
             decided_by: "clavenar-console".into(),
             reason: Some("capped per policy".into()),
-            modified_payload: Some(serde_json::json!({"amount": 100})),
+            modification_diff: Some(ModificationDiff::v1(vec![ArgumentScalarReplacement {
+                path: vec!["amount".into()],
+                value: serde_json::json!(100),
+            }])),
             approver_assertion: None,
             decided_via: None,
             tenant: None,
         };
         let json = serde_json::to_string(&body).unwrap();
         assert!(json.contains("\"decision\":\"modify\""));
-        assert!(json.contains("\"modified_payload\""));
-        assert!(json.contains("\"amount\":100"));
+        assert!(json.contains("\"modification_diff\""));
+        assert!(json.contains("\"path\":[\"amount\"]"));
+        assert!(json.contains("\"value\":100"));
+        assert!(!json.contains("modified_payload"));
     }
 
     #[test]
