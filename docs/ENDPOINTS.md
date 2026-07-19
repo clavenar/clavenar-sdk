@@ -208,16 +208,17 @@ different positive duration with `with_request_timeout`.
 | Method | HTTP route | Returns |
 |---|---|---|
 | `create_pending(body)` | `POST /pending` | `PendingRequest` |
-| `list_pending()` / `list_pending_scoped(jwt)` | `GET /pending?status=pending[&tenant=]` | `Vec<PendingRequest>` |
-| `list_auto_approved()` / `list_auto_approved_scoped(jwt)` | `GET /pending?status=approved[&tenant=]`, filtered to `decided_by = system:policy-tier` | `Vec<PendingRequest>` |
+| `list_pending()` / `list_pending_scoped(jwt)` | `GET /pending?status=pending` | `Vec<PendingRequest>` |
+| `list_auto_approved()` / `list_auto_approved_scoped(jwt)` | `GET /pending?status=approved`, filtered to `decided_by = system:policy-tier` | `Vec<PendingRequest>` |
+| `get_pending(id)` | `GET /pending/{id}` | `Option<PendingRequest>` (`404` → `None`) |
 | `verify_decision_link(token)` | `POST /decision-link/verify` | `DecisionLinkVerify` |
 | `patch_incident_summary(id, summary)` | `PATCH /pending/{id}/incident` | `PendingRequest` |
 | `assign(id, assigned_to, pool)` | `POST /pending/{id}/assign` | `PendingRequest` |
 | `notifications_config()` | `GET /notifications/config` | `ChannelStatus` |
 | `notifications_test()` | `POST /notifications/test` | `ChannelStatus` |
 | `get_pending_by_correlation(cid)` | `GET /pending/by-correlation/{cid}` | `Option<PendingRequest>` (`404` → `None`) |
-| `approvals_stats(window)` / `approvals_stats_scoped(window, jwt)` | `GET /approvals/stats?window=[&tenant=]` | `ApprovalStats` |
-| `stream_pending()` / `stream_pending_scoped(jwt)` | `GET /pending/stream[?tenant=]` (SSE) | raw `reqwest::Response` |
+| `approvals_stats(window)` / `approvals_stats_scoped(window, jwt)` | `GET /approvals/stats?window=` | `ApprovalStats` |
+| `stream_pending()` / `stream_pending_scoped(jwt)` | `GET /pending/stream` (SSE) | raw `reqwest::Response` |
 | `decide(id, decision, decided_by, reason, modified_payload, approver_assertion, credential, decided_via)` | `POST /decide/{id}` | `PendingRequest` |
 | `auth_proxy_post(sub_path, body, hil_cookie)` | `POST /auth/{sub_path}` | `AuthProxyResponse` (opaque body + `Set-Cookie` values) |
 | `identities_upsert(bearer, oidc_sub, slack, teams)` | `POST /identities/upsert` | `UserIdentities` |
@@ -228,10 +229,12 @@ Does **not** use `decode_response`: every non-2xx surfaces as
 `Server { status, body }` so callers can branch per status (404 "no
 longer pending", 409 "already decided", 422 "action invalid in this
 state"). `_scoped` variants forward a demo-session JWT as the
-`clavenar_demo_session` cookie; `with_tenant` stamps `?tenant=` on
-reads and the `tenant` body field on `/decide`. `decide`'s credential
-is a `HilDecideCredential` — WebAuthn session cookie, trusted-caller
-bearer (+ `x-clavenar-decided-by` stamp header), or demo-session JWT.
+`clavenar_demo_session` cookie; `with_tenant` sends the authenticated
+`X-Clavenar-Tenant-Scope` header on scoped reads and mutations. HIL accepts
+that header only from exact Console mTLS and independently matches it to the
+typed decision principal. `decide`'s credential is a `HilDecideCredential` —
+WebAuthn session cookie, trusted-caller bearer plus
+`X-Clavenar-Decision-Principal`, or demo-session JWT.
 
 ---
 

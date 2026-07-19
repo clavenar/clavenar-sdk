@@ -31,6 +31,11 @@ pub const DEMO_SESSION_COOKIE: &str = "clavenar_demo_session";
 /// the verified peer certificate itself.
 pub const DECISION_PRINCIPAL_HEADER: &str = "x-clavenar-decision-principal";
 
+/// Tenant assertion accepted by HIL only from the exact Console mTLS
+/// workload. Console derives the value from its authenticated server session;
+/// browser query/body values never populate it directly.
+pub const TENANT_SCOPE_HEADER: &str = "x-clavenar-tenant-scope";
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum DecisionPrincipalMethod {
@@ -295,9 +300,10 @@ pub enum HilDecideCredential<'a> {
 pub struct HilClient {
     base_url: Url,
     http: Arc<dyn HttpProvider>,
-    /// Operator-tenant scope (Phase 4b). When set, reads stamp `?tenant=`
-    /// and `/decide` carries the tenant so HIL confines the operator to
-    /// their own queue. `None` ⇒ demo (cookie-scoped) / single-tenant.
+    /// Authenticated Console tenant scope. When set, every scoped read or
+    /// mutation sends `X-Clavenar-Tenant-Scope`; `/decide` also requires it to
+    /// agree with the independently authenticated decision principal. `None`
+    /// is reserved for demo-cookie, Simulator, and auth-disabled callers.
     tenant: Option<String>,
 }
 
@@ -316,12 +322,18 @@ impl HilClient {
 
     /// A clone of this client scoped to an operator tenant. Mirrors
     /// [`crate::PoliciesClient::with_tenant`]: build a scoped client per
-    /// request from the authenticated session so reads and `/decide`
-    /// carry the operator's tenant. `None` leaves it unscoped
-    /// (demo / single-tenant).
+    /// request from the authenticated server session so route query/body
+    /// values cannot select the operator's HIL tenant.
     pub fn with_tenant(mut self, tenant: Option<String>) -> Self {
         self.tenant = tenant;
         self
+    }
+
+    fn apply_tenant_scope(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match self.tenant.as_deref() {
+            Some(tenant) => request.header(TENANT_SCOPE_HEADER, tenant),
+            None => request,
+        }
     }
 
     /// Inject a pre-built `reqwest::Client` (custom timeouts, TLS roots,
@@ -370,10 +382,6 @@ impl HilClient {
     ) -> Result<Vec<PendingRequest>, ClavenarError> {
         let mut url = self.join("pending")?;
         url.query_pairs_mut().append_pair("status", status);
-        if let Some(t) = &self.tenant {
-            url.query_pairs_mut().append_pair("tenant", t);
-        }
-
         let mut req = self.http.client().get(url);
         if let Some(jwt) = demo_session_jwt {
             req = req.header(
@@ -381,7 +389,7 @@ impl HilClient {
                 format!("{DEMO_SESSION_COOKIE}={jwt}"),
             );
         }
-        let resp = req.send().await?;
+        let resp = self.apply_tenant_scope(req).send().await?;
         read_json(resp).await
     }
 
@@ -454,7 +462,11 @@ impl HilClient {
     ) -> Result<PendingRequest, ClavenarError> {
         let url = self.join(&format!("pending/{id}/incident"))?;
         let body = serde_json::json!({ "incident_summary": incident_summary });
-        let resp = self.http.client().patch(url).json(&body).send().await?;
+        let resp = self
+            .apply_tenant_scope(self.http.client().patch(url))
+            .json(&body)
+            .send()
+            .await?;
         read_json(resp).await
     }
 
@@ -472,7 +484,11 @@ impl HilClient {
             "assigned_to": assigned_to,
             "escalation_pool": escalation_pool,
         });
-        let resp = self.http.client().post(url).json(&body).send().await?;
+        let resp = self
+            .apply_tenant_scope(self.http.client().post(url))
+            .json(&body)
+            .send()
+            .await?;
         read_json(resp).await
     }
 
@@ -499,7 +515,24 @@ impl HilClient {
         correlation_id: &str,
     ) -> Result<Option<PendingRequest>, ClavenarError> {
         let url = self.join(&format!("pending/by-correlation/{correlation_id}"))?;
-        let resp = self.http.client().get(url).send().await?;
+        let resp = self
+            .apply_tenant_scope(self.http.client().get(url))
+            .send()
+            .await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        read_json(resp).await.map(Some)
+    }
+
+    /// `GET /pending/{id}` within the authenticated Console tenant. HIL uses
+    /// a 404 for both absent and cross-tenant rows.
+    pub async fn get_pending(&self, id: Uuid) -> Result<Option<PendingRequest>, ClavenarError> {
+        let url = self.join(&format!("pending/{id}"))?;
+        let resp = self
+            .apply_tenant_scope(self.http.client().get(url))
+            .send()
+            .await?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -534,10 +567,6 @@ impl HilClient {
     ) -> Result<ApprovalStats, ClavenarError> {
         let mut url = self.join("approvals/stats")?;
         url.query_pairs_mut().append_pair("window", window);
-        if let Some(t) = &self.tenant {
-            url.query_pairs_mut().append_pair("tenant", t);
-        }
-
         let mut req = self.http.client().get(url);
         if let Some(jwt) = demo_session_jwt {
             req = req.header(
@@ -545,7 +574,7 @@ impl HilClient {
                 format!("{DEMO_SESSION_COOKIE}={jwt}"),
             );
         }
-        let resp = req.send().await?;
+        let resp = self.apply_tenant_scope(req).send().await?;
         read_json(resp).await
     }
 
@@ -573,10 +602,7 @@ impl HilClient {
         &self,
         demo_session_jwt: Option<&str>,
     ) -> Result<reqwest::Response, ClavenarError> {
-        let mut url = self.join("pending/stream")?;
-        if let Some(t) = &self.tenant {
-            url.query_pairs_mut().append_pair("tenant", t);
-        }
+        let url = self.join("pending/stream")?;
         let mut req = self
             .http
             .client()
@@ -588,7 +614,7 @@ impl HilClient {
                 format!("{DEMO_SESSION_COOKIE}={jwt}"),
             );
         }
-        let resp = req.send().await?;
+        let resp = self.apply_tenant_scope(req).send().await?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -629,9 +655,14 @@ impl HilClient {
             modified_payload,
             approver_assertion,
             decided_via: decided_via.map(str::to_owned),
-            tenant: self.tenant.clone(),
+            // Retained only for the explicit auth-disabled compatibility
+            // bridge. Every authenticated path derives tenant from its
+            // credential and the route-scope header, never this JSON field.
+            tenant: credential.is_none().then(|| self.tenant.clone()).flatten(),
         };
-        let mut req = self.http.client().post(url).json(&body);
+        let mut req = self
+            .apply_tenant_scope(self.http.client().post(url))
+            .json(&body);
         match credential {
             Some(HilDecideCredential::SessionCookie(cookie)) => {
                 // WebAuthn mode: HIL gates `/decide/{id}` on
@@ -1055,5 +1086,35 @@ mod tests {
     fn hil_client_surfaces_configured_base_url() {
         let client = HilClient::new("http://hil:8084").unwrap();
         assert_eq!(client.base_url().as_str(), "http://hil:8084/");
+    }
+
+    #[test]
+    fn scoped_hil_client_uses_header_not_query_authority() {
+        let client = HilClient::new("http://hil:8084")
+            .unwrap()
+            .with_tenant(Some("acme".into()));
+        let url = client.join("pending?status=pending&tenant=globex").unwrap();
+        let request = client
+            .apply_tenant_scope(client.http.client().get(url))
+            .build()
+            .unwrap();
+        assert_eq!(
+            request
+                .headers()
+                .get(TENANT_SCOPE_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some("acme")
+        );
+        assert!(request.url().query().unwrap().contains("tenant=globex"));
+    }
+
+    #[test]
+    fn unscoped_hil_client_emits_no_tenant_header() {
+        let client = HilClient::new("http://hil:8084").unwrap();
+        let request = client
+            .apply_tenant_scope(client.http.client().get(client.join("pending").unwrap()))
+            .build()
+            .unwrap();
+        assert!(!request.headers().contains_key(TENANT_SCOPE_HEADER));
     }
 }

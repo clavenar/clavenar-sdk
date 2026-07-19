@@ -69,7 +69,7 @@ pub use hil::{
     ApprovalStats, ApproverStat, AuthProxyResponse, ChannelStatus, DECISION_PRINCIPAL_HEADER,
     DEMO_SESSION_COOKIE, DecideRequest, Decision, DecisionLinkPending, DecisionLinkVerify,
     DecisionPrincipalMethod, HIL_SESSION_COOKIE, HilClient, HilDecideCredential, PendingRequest,
-    PendingStatus, UserIdentities,
+    PendingStatus, TENANT_SCOPE_HEADER, UserIdentities,
 };
 pub use http::{HttpProvider, StaticHttpClient};
 pub use ledger::{
