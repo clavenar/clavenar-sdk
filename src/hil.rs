@@ -26,10 +26,26 @@ pub const HIL_SESSION_COOKIE: &str = "clavenar_hil_session";
 /// the JWT and enforces the prefix-against-correlation-id gate.
 pub const DEMO_SESSION_COOKIE: &str = "clavenar_demo_session";
 
-/// Header HIL reads to source the audit row's `decided_by` stamp on
-/// bearer-mode `/decide` calls. Must match the constant on the HIL
-/// side (`clavenar_hil::auth::DECIDED_BY_HEADER`).
-pub const DECIDED_BY_HEADER: &str = "x-clavenar-decided-by";
+/// Hex-encoded typed principal claim. HIL accepts this header only from the
+/// exact Console mTLS workload and supplies the credential fingerprint from
+/// the verified peer certificate itself.
+pub const DECISION_PRINCIPAL_HEADER: &str = "x-clavenar-decision-principal";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DecisionPrincipalMethod {
+    Oidc,
+    Saml,
+    BasicAdmin,
+    OperatorMtls,
+}
+
+#[derive(Serialize)]
+struct ConsolePrincipalClaim<'a> {
+    subject: &'a str,
+    tenant: &'a str,
+    method: DecisionPrincipalMethod,
+}
 
 /// Status of a HIL pending row. Mirror of `clavenar_hil::Status`.
 /// Lowercase wire form via `#[serde(rename_all = "lowercase")]` on
@@ -254,10 +270,9 @@ pub enum Decision {
 ///   is the `clavenar_hil_session` cookie HIL issued during the
 ///   ceremony; HIL stamps `decided_by` server-side from the verified
 ///   credential, ignoring the request body's value.
-/// * [`HilDecideCredential::Bearer`] — trusted-caller bearer
-///   (`CLAVENAR_HIL_DECIDE_TOKEN`). The bearer is the trust anchor;
-///   `decided_by` rides the [`DECIDED_BY_HEADER`] header and HIL stamps
-///   the audit row from it.
+/// * [`HilDecideCredential::Bearer`] — trusted Console bearer plus a typed
+///   subject/method claim. HIL requires Console mTLS, supplies the peer
+///   credential fingerprint, and ignores legacy body attribution.
 /// * [`HilDecideCredential::DemoSession`] — demo-session JWT forwarded
 ///   as the `clavenar_demo_session` cookie. HIL re-verifies the
 ///   signature and enforces the prefix-against-correlation-id gate;
@@ -265,7 +280,11 @@ pub enum Decision {
 #[derive(Debug, Clone, Copy)]
 pub enum HilDecideCredential<'a> {
     SessionCookie(&'a str),
-    Bearer { token: &'a str, decided_by: &'a str },
+    Bearer {
+        token: &'a str,
+        subject: &'a str,
+        method: DecisionPrincipalMethod,
+    },
     DemoSession(&'a str),
 }
 
@@ -625,16 +644,21 @@ impl HilClient {
             }
             Some(HilDecideCredential::Bearer {
                 token,
-                decided_by: stamp,
+                subject,
+                method,
             }) => {
-                // Bearer mode: HIL accepts the bearer in lieu of the
-                // cookie when CLAVENAR_HIL_DECIDE_TOKEN is configured;
-                // the stamp lands on the audit row via the dedicated
-                // header. The verified human identity rides the
-                // header, NOT the request body.
+                let principal = ConsolePrincipalClaim {
+                    subject,
+                    tenant: self.tenant.as_deref().unwrap_or("unscoped"),
+                    method,
+                };
+                let encoded = hex::encode(
+                    serde_json::to_vec(&principal)
+                        .expect("ConsolePrincipalClaim serialization is infallible"),
+                );
                 req = req
                     .header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
-                    .header(DECIDED_BY_HEADER, stamp);
+                    .header(DECISION_PRINCIPAL_HEADER, encoded);
             }
             Some(HilDecideCredential::DemoSession(jwt)) => {
                 // Demo-session: forward the verified JWT via the same
