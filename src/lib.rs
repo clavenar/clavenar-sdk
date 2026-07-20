@@ -48,6 +48,7 @@ mod agents;
 mod brain;
 mod client;
 mod error;
+mod execution;
 pub mod hil;
 mod http;
 mod ledger;
@@ -65,6 +66,11 @@ pub use agents::{
 pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
+pub use execution::{
+    Authorization, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
+    ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature,
+    PolicyBundleProvenance, ReceiptRecorded, SignedAuthorization, WorkloadSignature,
+};
 pub use hil::{
     ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,
     DECISION_PRINCIPAL_HEADER, DEMO_SESSION_COOKIE, DecideRequest, Decision, DecisionLinkPending,

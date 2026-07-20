@@ -41,10 +41,11 @@ pub enum Auth {
 /// Cheap to clone — the inner `Arc<dyn HttpProvider>` is `Arc`-based.
 #[derive(Debug, Clone)]
 pub struct ClavenarClient {
-    base_url: Url,
-    auth: Auth,
-    http: Arc<dyn HttpProvider>,
+    pub(crate) base_url: Url,
+    pub(crate) auth: Auth,
+    pub(crate) http: Arc<dyn HttpProvider>,
     next_id: Arc<AtomicU64>,
+    pub(crate) execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
 }
 
 /// Two-step builder: validate the URL once, then attach optional
@@ -55,6 +56,7 @@ pub struct ClavenarClientBuilder {
     base_url: Url,
     auth: Auth,
     http: Option<Arc<dyn HttpProvider>>,
+    execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
 }
 
 impl ClavenarClient {
@@ -69,6 +71,7 @@ impl ClavenarClient {
             base_url: url,
             auth: Auth::None,
             http: None,
+            execution_signing_key: None,
         })
     }
 
@@ -162,6 +165,14 @@ impl ClavenarClientBuilder {
         self
     }
 
+    /// Attach the private P-256 key belonging to the same current SVID used
+    /// by the injected mTLS HTTP client. It is used only to sign terminal
+    /// execution receipts; Proxy verifies it against the request's TLS leaf.
+    pub fn execution_signing_key(mut self, key: p256::ecdsa::SigningKey) -> Self {
+        self.execution_signing_key = Some(Arc::new(key));
+        self
+    }
+
     /// Construct the client. Builds a default `reqwest::Client` if
     /// neither `http_client(...)` nor `http_provider(...)` was called.
     pub fn build(self) -> Result<ClavenarClient, ClavenarError> {
@@ -174,6 +185,7 @@ impl ClavenarClientBuilder {
             auth: self.auth,
             http,
             next_id: Arc::new(AtomicU64::new(1)),
+            execution_signing_key: self.execution_signing_key,
         })
     }
 }

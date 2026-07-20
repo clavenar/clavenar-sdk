@@ -19,7 +19,7 @@ use std::net::SocketAddr;
 
 use axum::{
     Json, Router,
-    extract::Path,
+    extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::{get, post},
@@ -27,9 +27,15 @@ use axum::{
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
+use base64::{Engine as _, engine::general_purpose};
 use clavenar_sdk::{
-    AuditFilterParams, Auth, ClavenarClient, ClavenarError, ExportOutcome, LedgerClient,
+    AuditFilterParams, Auth, ClavenarClient, ClavenarError, EXECUTION_CONTRACT,
+    EXECUTION_CONTRACT_HEADER, ExecutionEffect, ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
 };
+use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 use axum::extract::Query;
 use std::collections::HashMap;
@@ -54,6 +60,150 @@ async fn spawn(router: Router) -> (String, oneshot::Sender<()>) {
             .expect("serve");
     });
     (format!("http://{addr}"), tx)
+}
+
+#[derive(Clone)]
+struct ExecutionStub {
+    authorization: Value,
+    verifying_key: VerifyingKey,
+}
+
+#[tokio::test]
+async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let signing_key = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+    let state = ExecutionStub {
+        authorization: fixture["authorization"].clone(),
+        verifying_key: *signing_key.verifying_key(),
+    };
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(
+                |State(state): State<ExecutionStub>,
+                 headers: HeaderMap,
+                 Json(body): Json<Value>| async move {
+                    assert_eq!(
+                        headers
+                            .get(EXECUTION_CONTRACT_HEADER)
+                            .and_then(|value| value.to_str().ok()),
+                        Some(EXECUTION_CONTRACT)
+                    );
+                    assert_eq!(
+                        headers
+                            .get(IDEMPOTENCY_ID_HEADER)
+                            .and_then(|value| value.to_str().ok()),
+                        Some("cfcc8767-4c73-41cc-8ece-b855863924c4")
+                    );
+                    assert_eq!(
+                        body,
+                        state.authorization["authorization"]["execution_payload"]
+                    );
+                    (StatusCode::OK, Json(state.authorization)).into_response()
+                },
+            ),
+        )
+        .route(
+            "/execution-receipts",
+            post(
+                |State(state): State<ExecutionStub>, Json(receipt): Json<Value>| async move {
+                    assert_eq!(receipt["stage"], "execution.completed");
+                    assert_eq!(
+                        receipt["result_sha256"],
+                        "sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93"
+                    );
+                    let signature = receipt["workload_signature"]["value"].as_str().unwrap();
+                    let signature = general_purpose::URL_SAFE_NO_PAD.decode(signature).unwrap();
+                    let signature = Signature::from_slice(&signature).unwrap();
+                    let mut unsigned = receipt.clone();
+                    unsigned
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("workload_signature");
+                    let canonical = canonical_json(&unsigned);
+                    state
+                        .verifying_key
+                        .verify(canonical.as_bytes(), &signature)
+                        .unwrap();
+                    (
+                        StatusCode::CREATED,
+                        Json(json!({
+                            "status": "recorded",
+                            "contract": EXECUTION_CONTRACT,
+                            "stage": "execution.completed",
+                            "authorization_id": receipt["authorization_id"],
+                            "receipt_sha256": format!(
+                                "sha256:{}",
+                                hex::encode(Sha256::digest(canonical.as_bytes()))
+                            )
+                        })),
+                    )
+                        .into_response()
+                },
+            ),
+        )
+        .with_state(state);
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(signing_key)
+        .build()
+        .unwrap();
+    let outcome = client
+        .execute_tool(
+            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+            "payments.transfer",
+            json!({"amount": 100}),
+            |payload| async move {
+                assert_eq!(payload["params"]["arguments"]["amount"], 100);
+                Ok(ExecutionEffect {
+                    result: json!({"ok": true}),
+                    effect_id: "provider-operation-123".into(),
+                })
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome.result, json!({"ok": true}));
+    assert_eq!(outcome.receipt.stage, "execution.completed");
+    drop(shutdown);
+}
+
+fn canonical_json<T: Serialize>(value: &T) -> String {
+    canonical_json_value(&serde_json::to_value(value).unwrap())
+}
+
+fn canonical_json_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(canonical_json_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!(
+                        "{}:{}",
+                        Value::String(key.clone()),
+                        canonical_json_value(&object[key])
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
 }
 
 #[tokio::test]

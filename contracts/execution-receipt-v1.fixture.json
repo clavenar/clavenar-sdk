@@ -1,0 +1,106 @@
+{
+  "authorization": {
+    "authorization": {
+      "contract": "clavenar.execution/v1",
+      "stage": "authorization",
+      "authorization_id": "354c33ed-e5d3-4af7-a1b8-b009d50b0bc5",
+      "idempotency_id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+      "correlation_id": "c1a28e4c-a17d-5b3d-884b-e5b627f762c2",
+      "agent_id": "payments-agent",
+      "agent_spiffe": "spiffe://clavenar.local/tenant/acme/agent/payments-agent/instance/one",
+      "tenant": "acme",
+      "credential_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "method": "tools/call",
+      "tool_name": "payments.transfer",
+      "execution_payload": {
+        "jsonrpc": "2.0",
+        "id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+        "method": "tools/call",
+        "params": { "name": "payments.transfer", "arguments": { "amount": 100 } }
+      },
+      "payload_sha256": "sha256:269123e546c75ec2df26ce4a52baeab92e58afdfabcb111c3e9069a37f78f1c5",
+      "decision_principal": {
+        "subject": "system:policy-brain",
+        "tenant": "acme",
+        "method": "policy-brain",
+        "credential": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "modification_diff": null,
+      "policy_bundle": {
+        "schema_version": 1,
+        "version": "2026-07-20.1",
+        "hash_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "policy_count": 7
+      },
+      "brain_version": "brain-2026-07-20",
+      "brain_evidence_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+    },
+    "identity_signature": {
+      "algorithm": "Ed25519",
+      "key_id": "clavenar-identity:v1",
+      "value": "vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+    }
+  },
+  "receipt": {
+    "contract": "clavenar.execution/v1",
+    "stage": "execution.completed",
+    "authorization_id": "354c33ed-e5d3-4af7-a1b8-b009d50b0bc5",
+    "idempotency_id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+    "correlation_id": "c1a28e4c-a17d-5b3d-884b-e5b627f762c2",
+    "agent_id": "payments-agent",
+    "agent_spiffe": "spiffe://clavenar.local/tenant/acme/agent/payments-agent/instance/one",
+    "tenant": "acme",
+    "credential_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "method": "tools/call",
+    "payload_sha256": "sha256:269123e546c75ec2df26ce4a52baeab92e58afdfabcb111c3e9069a37f78f1c5",
+    "authorization": {
+      "authorization": {
+        "contract": "clavenar.execution/v1",
+        "stage": "authorization",
+        "authorization_id": "354c33ed-e5d3-4af7-a1b8-b009d50b0bc5",
+        "idempotency_id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+        "correlation_id": "c1a28e4c-a17d-5b3d-884b-e5b627f762c2",
+        "agent_id": "payments-agent",
+        "agent_spiffe": "spiffe://clavenar.local/tenant/acme/agent/payments-agent/instance/one",
+        "tenant": "acme",
+        "credential_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "method": "tools/call",
+        "tool_name": "payments.transfer",
+        "execution_payload": {
+          "jsonrpc": "2.0",
+          "id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+          "method": "tools/call",
+          "params": { "name": "payments.transfer", "arguments": { "amount": 100 } }
+        },
+        "payload_sha256": "sha256:269123e546c75ec2df26ce4a52baeab92e58afdfabcb111c3e9069a37f78f1c5",
+        "decision_principal": {
+          "subject": "system:policy-brain",
+          "tenant": "acme",
+          "method": "policy-brain",
+          "credential": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "modification_diff": null,
+        "policy_bundle": {
+          "schema_version": 1,
+          "version": "2026-07-20.1",
+          "hash_sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "policy_count": 7
+        },
+        "brain_version": "brain-2026-07-20",
+        "brain_evidence_sha256": "sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      },
+      "identity_signature": {
+        "algorithm": "Ed25519",
+        "key_id": "clavenar-identity:v1",
+        "value": "vault:v1:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+      }
+    },
+    "result_sha256": "sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93",
+    "effect_id": "provider-operation-123",
+    "workload_signature": {
+      "algorithm": "ES256",
+      "credential_fingerprint": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "value": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    }
+  }
+}

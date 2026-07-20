@@ -1,0 +1,388 @@
+//! SDK-governed execution contract.
+//!
+//! Proxy authorizes an exact, canonical JSON-RPC payload without invoking the
+//! upstream. The SDK invokes the supplied executor with those signed bytes,
+//! then signs and submits a terminal receipt with the private P-256 key for
+//! the same mTLS SVID. Batching, uncertain-effect recovery, automatic retry,
+//! and non-Rust SDK parity remain part of the later executor migration.
+
+use std::future::Future;
+
+use base64::{Engine as _, engine::general_purpose};
+use p256::ecdsa::{Signature, signature::Signer as _};
+use reqwest::StatusCode;
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+use crate::{Auth, ClavenarClient, ClavenarError};
+
+pub const EXECUTION_CONTRACT: &str = "clavenar.execution/v1";
+pub const EXECUTION_CONTRACT_HEADER: &str = "x-clavenar-execution-contract";
+pub const IDEMPOTENCY_ID_HEADER: &str = "x-clavenar-idempotency-id";
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct IdentitySignature {
+    pub algorithm: String,
+    pub key_id: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PolicyBundleProvenance {
+    pub schema_version: u8,
+    pub version: String,
+    pub hash_sha256: String,
+    pub policy_count: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct Authorization {
+    pub contract: String,
+    pub stage: String,
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub correlation_id: Uuid,
+    pub agent_id: String,
+    pub agent_spiffe: String,
+    pub tenant: String,
+    pub credential_fingerprint: String,
+    pub method: String,
+    pub tool_name: String,
+    pub execution_payload: Value,
+    pub payload_sha256: String,
+    pub decision_principal: Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub modification_diff: Option<Value>,
+    pub policy_bundle: PolicyBundleProvenance,
+    pub brain_version: String,
+    pub brain_evidence_sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct SignedAuthorization {
+    pub authorization: Authorization,
+    pub identity_signature: IdentitySignature,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct WorkloadSignature {
+    pub algorithm: String,
+    pub credential_fingerprint: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionReceipt {
+    pub contract: String,
+    pub stage: String,
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub correlation_id: Uuid,
+    pub agent_id: String,
+    pub agent_spiffe: String,
+    pub tenant: String,
+    pub credential_fingerprint: String,
+    pub method: String,
+    pub payload_sha256: String,
+    pub authorization: SignedAuthorization,
+    pub result_sha256: String,
+    pub effect_id: String,
+    pub workload_signature: WorkloadSignature,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct UnsignedExecutionReceipt<'a> {
+    contract: &'a str,
+    stage: &'a str,
+    authorization_id: Uuid,
+    idempotency_id: Uuid,
+    correlation_id: Uuid,
+    agent_id: &'a str,
+    agent_spiffe: &'a str,
+    tenant: &'a str,
+    credential_fingerprint: &'a str,
+    method: &'a str,
+    payload_sha256: &'a str,
+    authorization: &'a SignedAuthorization,
+    result_sha256: &'a str,
+    effect_id: &'a str,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionEffect {
+    pub result: Value,
+    pub effect_id: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptRecorded {
+    pub status: String,
+    pub contract: String,
+    pub stage: String,
+    pub authorization_id: Uuid,
+    pub receipt_sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExecutionOutcome {
+    pub authorization: SignedAuthorization,
+    pub receipt: ReceiptRecorded,
+    pub result: Value,
+    pub effect_id: String,
+}
+
+impl ClavenarClient {
+    /// Request side-effect-free authorization for an exact tool payload.
+    /// Reusing `idempotency_id` is safe only with byte-equivalent input.
+    pub async fn authorize_tool(
+        &self,
+        idempotency_id: Uuid,
+        name: &str,
+        arguments: Value,
+    ) -> Result<SignedAuthorization, ClavenarError> {
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": idempotency_id.to_string(),
+            "method": "tools/call",
+            "params": { "name": name, "arguments": arguments },
+        });
+        let endpoint = self
+            .base_url
+            .join("mcp")
+            .map_err(|error| ClavenarError::InvalidConfig(format!("join /mcp: {error}")))?;
+        let mut request = self
+            .http
+            .client()
+            .post(endpoint)
+            .header(EXECUTION_CONTRACT_HEADER, EXECUTION_CONTRACT)
+            .header(IDEMPOTENCY_ID_HEADER, idempotency_id.to_string())
+            .json(&body);
+        if let Auth::Bearer(token) = &self.auth {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let raw = response.text().await?;
+        if status != StatusCode::OK {
+            return execution_http_error(status, raw);
+        }
+        let authorization: SignedAuthorization = serde_json::from_str(&raw)?;
+        validate_authorization(&authorization, idempotency_id)?;
+        Ok(authorization)
+    }
+
+    /// Authorize, execute, and record one exact tool effect.
+    ///
+    /// The executor receives the complete signed JSON-RPC value, including
+    /// any HIL modification. Proxy never executes this mode. If the executor
+    /// returns an error, no completion receipt is claimed.
+    pub async fn execute_tool<F, Fut>(
+        &self,
+        idempotency_id: Uuid,
+        name: &str,
+        arguments: Value,
+        executor: F,
+    ) -> Result<ExecutionOutcome, ClavenarError>
+    where
+        F: FnOnce(Value) -> Fut,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>>,
+    {
+        let signing_key = self.execution_signing_key.as_ref().ok_or_else(|| {
+            ClavenarError::InvalidConfig(
+                "execution_signing_key is required for SDK-governed execution".into(),
+            )
+        })?;
+        let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
+        let effect = executor(authorization.authorization.execution_payload.clone()).await?;
+        if effect.effect_id.is_empty() || effect.effect_id.len() > 256 {
+            return Err(ClavenarError::InvalidConfig(
+                "execution effect_id must contain 1..=256 characters".into(),
+            ));
+        }
+        let claims = &authorization.authorization;
+        let result_sha256 = sha256(canonical_json_value(&effect.result).as_bytes());
+        let unsigned = UnsignedExecutionReceipt {
+            contract: EXECUTION_CONTRACT,
+            stage: "execution.completed",
+            authorization_id: claims.authorization_id,
+            idempotency_id: claims.idempotency_id,
+            correlation_id: claims.correlation_id,
+            agent_id: &claims.agent_id,
+            agent_spiffe: &claims.agent_spiffe,
+            tenant: &claims.tenant,
+            credential_fingerprint: &claims.credential_fingerprint,
+            method: &claims.method,
+            payload_sha256: &claims.payload_sha256,
+            authorization: &authorization,
+            result_sha256: &result_sha256,
+            effect_id: &effect.effect_id,
+        };
+        let canonical_unsigned = canonical_json(&unsigned)?;
+        let signature: Signature = signing_key.sign(canonical_unsigned.as_bytes());
+        let receipt = ExecutionReceipt {
+            contract: EXECUTION_CONTRACT.into(),
+            stage: "execution.completed".into(),
+            authorization_id: claims.authorization_id,
+            idempotency_id: claims.idempotency_id,
+            correlation_id: claims.correlation_id,
+            agent_id: claims.agent_id.clone(),
+            agent_spiffe: claims.agent_spiffe.clone(),
+            tenant: claims.tenant.clone(),
+            credential_fingerprint: claims.credential_fingerprint.clone(),
+            method: claims.method.clone(),
+            payload_sha256: claims.payload_sha256.clone(),
+            authorization: authorization.clone(),
+            result_sha256,
+            effect_id: effect.effect_id.clone(),
+            workload_signature: WorkloadSignature {
+                algorithm: "ES256".into(),
+                credential_fingerprint: claims.credential_fingerprint.clone(),
+                value: general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+            },
+        };
+        let recorded = self.record_receipt(&receipt).await?;
+        Ok(ExecutionOutcome {
+            authorization,
+            receipt: recorded,
+            result: effect.result,
+            effect_id: effect.effect_id,
+        })
+    }
+
+    async fn record_receipt(
+        &self,
+        receipt: &ExecutionReceipt,
+    ) -> Result<ReceiptRecorded, ClavenarError> {
+        let endpoint = self.base_url.join("execution-receipts").map_err(|error| {
+            ClavenarError::InvalidConfig(format!("join /execution-receipts: {error}"))
+        })?;
+        let mut request = self.http.client().post(endpoint).json(receipt);
+        if let Auth::Bearer(token) = &self.auth {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let raw = response.text().await?;
+        if status != StatusCode::OK && status != StatusCode::CREATED {
+            return execution_http_error(status, raw);
+        }
+        Ok(serde_json::from_str(&raw)?)
+    }
+}
+
+fn validate_authorization(
+    signed: &SignedAuthorization,
+    idempotency_id: Uuid,
+) -> Result<(), ClavenarError> {
+    let claims = &signed.authorization;
+    let payload_sha256 = sha256(canonical_json_value(&claims.execution_payload).as_bytes());
+    if claims.contract != EXECUTION_CONTRACT
+        || claims.stage != "authorization"
+        || claims.idempotency_id != idempotency_id
+        || claims.payload_sha256 != payload_sha256
+        || signed.identity_signature.algorithm != "Ed25519"
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "Proxy returned an invalid execution authorization".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn execution_http_error<T>(status: StatusCode, body: String) -> Result<T, ClavenarError> {
+    match status {
+        StatusCode::UNAUTHORIZED => Err(ClavenarError::Unauthorized(body)),
+        StatusCode::BAD_REQUEST => Err(ClavenarError::BadRequest(body)),
+        other => Err(ClavenarError::Server {
+            status: other,
+            body,
+        }),
+    }
+}
+
+fn canonical_json<T: Serialize>(value: &T) -> Result<String, ClavenarError> {
+    let value = serde_json::to_value(value)?;
+    Ok(canonical_json_value(&value))
+}
+
+fn canonical_json_value(value: &Value) -> String {
+    match value {
+        Value::Null => "null".into(),
+        Value::Bool(_) | Value::Number(_) | Value::String(_) => value.to_string(),
+        Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(canonical_json_value)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        Value::Object(object) => {
+            let mut keys = object.keys().collect::<Vec<_>>();
+            keys.sort_unstable();
+            format!(
+                "{{{}}}",
+                keys.into_iter()
+                    .map(|key| format!(
+                        "{}:{}",
+                        Value::String(key.clone()),
+                        canonical_json_value(&object[key])
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        }
+    }
+}
+
+fn sha256(bytes: &[u8]) -> String {
+    format!("sha256:{}", hex::encode(Sha256::digest(bytes)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use p256::ecdsa::signature::Verifier as _;
+
+    #[test]
+    fn canonical_json_and_es256_encoding_are_stable() {
+        assert_eq!(
+            canonical_json_value(&json!({"z": 1, "a": {"y": 2, "b": 3}})),
+            r#"{"a":{"b":3,"y":2},"z":1}"#
+        );
+        let key = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let signature: Signature = key.sign(b"canonical receipt");
+        let encoded = general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes());
+        let decoded = general_purpose::URL_SAFE_NO_PAD.decode(encoded).unwrap();
+        let signature = Signature::from_slice(&decoded).unwrap();
+        key.verifying_key()
+            .verify(b"canonical receipt", &signature)
+            .unwrap();
+    }
+
+    #[test]
+    fn public_contract_fixture_is_byte_pinned_and_decodes() {
+        let schema = include_bytes!("../contracts/execution-receipt-v1.schema.json");
+        let fixture = include_bytes!("../contracts/execution-receipt-v1.fixture.json");
+        assert_eq!(
+            hex::encode(Sha256::digest(schema)),
+            "2284cb6990663af9eb4954b2fcf5e5d21944ed6f33754fc9ed5765e52d4e6970"
+        );
+        assert_eq!(
+            hex::encode(Sha256::digest(fixture)),
+            "fa51afcfa2c69006e83670b5921af361d6e7acb32a8fbcb94dffd9e16871967c"
+        );
+        let fixture: Value = serde_json::from_slice(fixture).unwrap();
+        serde_json::from_value::<SignedAuthorization>(fixture["authorization"].clone()).unwrap();
+        serde_json::from_value::<ExecutionReceipt>(fixture["receipt"].clone()).unwrap();
+    }
+}

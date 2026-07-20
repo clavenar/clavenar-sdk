@@ -34,6 +34,7 @@ hex = "0.4"
 # manifest signature — reused primitive, not new crypto.
 ed25519-dalek = { version = "2", features = ["pkcs8", "pem"] }
 base64 = "0.22"
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }
 
 [dev-dependencies]
 # axum 0.8 (not 0.7) — the `{param}` capture syntax in test routes is

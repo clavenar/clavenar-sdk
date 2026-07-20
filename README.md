@@ -70,6 +70,51 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Exact SDK-governed execution
+
+`execute_tool` selects `clavenar.execution/v1`: Proxy runs its complete
+security/HIL pipeline and signs the exact canonical payload, but performs no
+upstream effect. The SDK passes that signed payload to your executor, signs a
+terminal receipt, and waits for the receipt's synchronous Ledger commit.
+
+Build the injected `reqwest::Client` with the current workload SVID, and pass
+the matching P-256 private key through `execution_signing_key`. Proxy verifies
+the receipt signature against the TLS leaf used on that same request.
+
+```rust,no_run
+use clavenar_sdk::{ClavenarClient, ExecutionEffect};
+use serde_json::json;
+use uuid::Uuid;
+
+# async fn run(mtls_client: reqwest::Client, svid_key: p256::ecdsa::SigningKey)
+# -> Result<(), clavenar_sdk::ClavenarError> {
+let client = ClavenarClient::builder("https://proxy:8443")?
+    .http_client(mtls_client)
+    .execution_signing_key(svid_key)
+    .build()?;
+let outcome = client.execute_tool(
+    Uuid::new_v4(),
+    "payments.transfer",
+    json!({"amount": 100}),
+    |signed_jsonrpc| async move {
+        // Invoke the tool using exactly signed_jsonrpc; this is the sole
+        // side-effecting step in the v1 SDK-governed path.
+        let _ = signed_jsonrpc;
+        Ok(ExecutionEffect {
+            result: json!({"ok": true}),
+            effect_id: "provider-operation-123".into(),
+        })
+    },
+).await?;
+assert_eq!(outcome.receipt.stage, "execution.completed");
+# Ok(()) }
+```
+
+An exact retry may reuse its UUID; changed bytes under the same UUID are a
+conflict. Automatic retries after an uncertain external effect, batching,
+intent capture, other language SDKs, and migration of the legacy
+Proxy-executed default remain WP-06 scope.
+
 ## Audit reconstruction
 
 The full edition writes two ledger rows per successful request (proxy

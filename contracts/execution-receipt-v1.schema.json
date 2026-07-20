@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.clavenar.com/execution-receipt-v1.schema.json",
+  "title": "Clavenar exact execution authorization and receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["authorization", "receipt"],
+  "properties": {
+    "authorization": { "$ref": "#/$defs/signedAuthorization" },
+    "receipt": { "$ref": "#/$defs/executionReceipt" }
+  },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "uuid": { "type": "string", "format": "uuid", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$" },
+    "identitySignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "key_id", "value"],
+      "properties": {
+        "algorithm": { "const": "Ed25519" },
+        "key_id": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
+      }
+    },
+    "policyBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "version", "hash_sha256", "policy_count"],
+      "properties": {
+        "schema_version": { "type": "integer", "minimum": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "hash_sha256": { "$ref": "#/$defs/digest" },
+        "policy_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "stage", "authorization_id", "idempotency_id", "correlation_id", "agent_id", "agent_spiffe", "tenant", "credential_fingerprint", "method", "tool_name", "execution_payload", "payload_sha256", "decision_principal", "policy_bundle", "brain_version", "brain_evidence_sha256"],
+      "properties": {
+        "contract": { "const": "clavenar.execution/v1" },
+        "stage": { "const": "authorization" },
+        "authorization_id": { "$ref": "#/$defs/uuid" },
+        "idempotency_id": { "$ref": "#/$defs/uuid" },
+        "correlation_id": { "$ref": "#/$defs/uuid" },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "agent_spiffe": { "type": "string", "pattern": "^spiffe://" },
+        "tenant": { "type": "string", "minLength": 1 },
+        "credential_fingerprint": { "$ref": "#/$defs/digest" },
+        "method": { "type": "string", "minLength": 1 },
+        "tool_name": { "type": "string", "minLength": 1 },
+        "execution_payload": { "type": "object" },
+        "payload_sha256": { "$ref": "#/$defs/digest" },
+        "decision_principal": {
+          "type": "object",
+          "additionalProperties": true,
+          "required": ["subject", "tenant", "method", "credential"],
+          "properties": {
+            "subject": { "type": "string", "minLength": 1 },
+            "tenant": { "type": "string", "minLength": 1 },
+            "method": { "type": "string", "minLength": 1 },
+            "credential": { "type": "string", "minLength": 1 }
+          }
+        },
+        "modification_diff": { "type": ["object", "null"] },
+        "policy_bundle": { "$ref": "#/$defs/policyBundle" },
+        "brain_version": { "type": "string", "minLength": 1 },
+        "brain_evidence_sha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "signedAuthorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorization", "identity_signature"],
+      "properties": {
+        "authorization": { "$ref": "#/$defs/authorization" },
+        "identity_signature": { "$ref": "#/$defs/identitySignature" }
+      }
+    },
+    "workloadSignature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "credential_fingerprint", "value"],
+      "properties": {
+        "algorithm": { "const": "ES256" },
+        "credential_fingerprint": { "$ref": "#/$defs/digest" },
+        "value": { "type": "string", "pattern": "^[A-Za-z0-9_-]{86}$" }
+      }
+    },
+    "executionReceipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "stage", "authorization_id", "idempotency_id", "correlation_id", "agent_id", "agent_spiffe", "tenant", "credential_fingerprint", "method", "payload_sha256", "authorization", "result_sha256", "effect_id", "workload_signature"],
+      "properties": {
+        "contract": { "const": "clavenar.execution/v1" },
+        "stage": { "const": "execution.completed" },
+        "authorization_id": { "$ref": "#/$defs/uuid" },
+        "idempotency_id": { "$ref": "#/$defs/uuid" },
+        "correlation_id": { "$ref": "#/$defs/uuid" },
+        "agent_id": { "type": "string", "minLength": 1 },
+        "agent_spiffe": { "type": "string", "pattern": "^spiffe://" },
+        "tenant": { "type": "string", "minLength": 1 },
+        "credential_fingerprint": { "$ref": "#/$defs/digest" },
+        "method": { "type": "string", "minLength": 1 },
+        "payload_sha256": { "$ref": "#/$defs/digest" },
+        "authorization": { "$ref": "#/$defs/signedAuthorization" },
+        "result_sha256": { "$ref": "#/$defs/digest" },
+        "effect_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "workload_signature": { "$ref": "#/$defs/workloadSignature" }
+      }
+    }
+  }
+}
