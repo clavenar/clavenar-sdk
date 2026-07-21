@@ -9,6 +9,13 @@ at that version".
 
 ### Added
 
+- `reconciling_tool_executor` registers both an idempotent executor and its
+  non-executing effect lookup. `ExecutionUncertain` carries a serializable,
+  exact-identity handle, and `reconcile_uncertain_effect` can complete it only
+  from a lookup-confirmed result/effect ID.
+- `DurableExecutionStore::begin_effect_attempt` atomically persists the exact
+  intent, authorization use, and in-flight marker before executor invocation;
+  `load_uncertain_intent` restores that exact state for reconciliation.
 - Serializable `PendingAuthorization` handles and begin/resume APIs for
   prepared single-tool and atomic-batch requests. Human-review polling replays
   the retained request, and approval is atomically claimed once before the
@@ -47,6 +54,10 @@ at that version".
 
 ### Security
 
+- Once an effect crosses the durable in-flight boundary, executor errors,
+  restarts, retries, and concurrent duplicates cannot invoke it again.
+  Not-found, unavailable, ambiguous, invalid, or unregistered effect lookups
+  remain explicitly uncertain; only receipt outbox delivery may retry.
 - Pending handles are bound to the verified workload, stable idempotency and
   correlation IDs, deterministic pending ID, and exact canonical payload
   digest. Polling, denial, expiry, substitution, and repeated claims release

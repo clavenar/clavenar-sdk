@@ -85,6 +85,17 @@ identity before invoking the executor, then atomically stores the actual
 result/effect and enqueues the workload-signed receipt. Missing or unavailable
 durability fails closed. Receipt redelivery uses
 `flush_execution_receipt_outbox` and cannot execute a tool.
+Before any decision network request, the SDK also requires the store to opt in
+to `supports_uncertain_effect_reconciliation`. Its `begin_effect_attempt`
+implementation must atomically persist the exact intent, authorization use,
+and in-flight marker. After that boundary, an executor error, process restart,
+or duplicate call returns a serializable `ExecutionUncertain` handle and never
+invokes the executor again. Explicit `reconcile_uncertain_effect` calls only
+the registered executor's idempotency/effect lookup. A found effect follows the
+normal completion/outbox path; not-found, unavailable, ambiguous, and invalid
+results remain uncertain for later lookup or human handling. The invariant is
+fixed by
+[`contracts/uncertain-effect-reconciliation-v1.json`](contracts/uncertain-effect-reconciliation-v1.json).
 The exact invariant set is
 [`contracts/sdk-execution-authority-v1.json`](contracts/sdk-execution-authority-v1.json).
 The selector/server-execution separation is fixed by
@@ -126,7 +137,9 @@ the matching P-256 private key through `execution_signing_key`. Proxy verifies
 the receipt signature against the TLS leaf used on that same request.
 
 ```rust,no_run
-use clavenar_sdk::{ClavenarClient, ExecutionEffect, PreparedToolRequest};
+use clavenar_sdk::{
+    ClavenarClient, EffectLookupOutcome, ExecutionEffect, PreparedToolRequest,
+};
 use serde_json::json;
 
 # async fn run<S>(mtls_client: reqwest::Client, svid_key: p256::ecdsa::SigningKey,
@@ -138,15 +151,24 @@ let client = ClavenarClient::builder("https://proxy:8443")?
     .http_client(mtls_client)
     .execution_signing_key(svid_key)
     .durable_execution_store(durable_store)
-    .idempotent_tool_executor("payments-provider/v1", |request| async move {
-        // Forward request.idempotency_id when the provider supports it and
-        // invoke only request.execution_payload.
-        let _ = request.idempotency_id;
-        Ok(ExecutionEffect {
-            result: json!({"ok": true}),
-            effect_id: "provider-operation-123".into(),
-        })
-    })
+    .reconciling_tool_executor(
+        "payments-provider/v1",
+        |request| async move {
+            // Forward request.idempotency_id and invoke only the exact
+            // request.execution_payload.
+            let _ = request.idempotency_id;
+            Ok(ExecutionEffect {
+                result: json!({"ok": true}),
+                effect_id: "provider-operation-123".into(),
+            })
+        },
+        |lookup| async move {
+            // Query the provider by lookup.idempotency_id. NotFound is never
+            // permission for the SDK to execute again.
+            let _ = lookup.idempotency_id;
+            Ok(EffectLookupOutcome::NotFound)
+        },
+    )
     .build()?;
 let prepared = PreparedToolRequest::new(
     "payments.transfer",
@@ -165,9 +187,9 @@ decision without a second upstream effect; changed bytes under that UUID are a
 conflict. Receipt delivery may be resumed from the durable outbox without
 re-authorizing or re-executing. Pending review polling likewise releases zero
 effects, and concurrent approval resumes produce one durable claim and at most
-one executor invocation. Automatic execution retries after an uncertain
-external effect, other language SDKs, and migration of the legacy
-Proxy-executed default remain WP-06 scope.
+one executor invocation. Uncertain external effects are lookup-only and never
+automatically re-executed. Automatic transport-retry removal, other language
+SDKs, and migration of the legacy Proxy-executed default remain WP-06 scope.
 
 ## Audit reconstruction
 

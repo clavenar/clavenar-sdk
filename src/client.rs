@@ -20,7 +20,10 @@ use serde_json::{Value, json};
 use crate::ClavenarError;
 use crate::execution::RegisteredToolExecutor;
 use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
-use crate::{DurableExecutionStore, ExecutionEffect, ToolExecutionRequest};
+use crate::{
+    DurableExecutionStore, EffectLookupOutcome, EffectLookupRequest, ExecutionEffect,
+    ToolExecutionRequest,
+};
 
 /// Authentication mode for the proxy.
 ///
@@ -208,6 +211,29 @@ impl ClavenarClientBuilder {
         self.tool_executor = Some(RegisteredToolExecutor::new_idempotent(
             executor_id.into(),
             executor,
+        ));
+        self
+    }
+
+    /// Register an idempotent executor and its non-executing effect lookup.
+    /// The lookup is the only callback used by explicit uncertain-effect
+    /// reconciliation; `NotFound` never permits automatic re-execution.
+    pub fn reconciling_tool_executor<F, Fut, L, LookupFut>(
+        mut self,
+        executor_id: impl Into<String>,
+        executor: F,
+        effect_lookup: L,
+    ) -> Self
+    where
+        F: Fn(ToolExecutionRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+        L: Fn(EffectLookupRequest) -> LookupFut + Send + Sync + 'static,
+        LookupFut: Future<Output = Result<EffectLookupOutcome, ClavenarError>> + Send + 'static,
+    {
+        self.tool_executor = Some(RegisteredToolExecutor::new_reconciling(
+            executor_id.into(),
+            executor,
+            effect_lookup,
         ));
         self
     }

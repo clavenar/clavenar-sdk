@@ -6,8 +6,12 @@
 //! retrying outbox with the private P-256 key for the same mTLS SVID.
 //! Whole-batch decisions share this path. Human-review decisions return a
 //! stable pending handle; the retained prepared request polls and atomically
-//! claims the eventual exact authorization once. Uncertain-effect recovery,
-//! automatic execution retry, and non-Rust SDK parity remain later work.
+//! claims the eventual exact authorization once. Every effect crosses a
+//! durable in-flight boundary before the executor runs. A crash or ambiguous
+//! executor result stays explicitly uncertain until the registered executor's
+//! idempotency lookup reconciles it; the SDK never executes it automatically
+//! again. Automatic transport-retry removal and non-Rust SDK parity remain
+//! later work.
 
 use std::{collections::HashSet, fmt, future::Future, ops::Deref, pin::Pin, sync::Arc};
 
@@ -25,6 +29,10 @@ type ToolExecutorFuture =
     Pin<Box<dyn Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static>>;
 type ToolExecutorCallback =
     dyn Fn(ToolExecutionRequest) -> ToolExecutorFuture + Send + Sync + 'static;
+type ToolEffectLookupFuture =
+    Pin<Box<dyn Future<Output = Result<EffectLookupOutcome, ClavenarError>> + Send + 'static>>;
+type ToolEffectLookupCallback =
+    dyn Fn(EffectLookupRequest) -> ToolEffectLookupFuture + Send + Sync + 'static;
 
 pub type DurableStoreFuture<T> =
     Pin<Box<dyn Future<Output = Result<T, ClavenarError>> + Send + 'static>>;
@@ -60,6 +68,44 @@ pub trait DurableExecutionStore: fmt::Debug + Send + Sync + 'static {
         })
     }
 
+    /// Whether the store atomically commits the exact intent, authorization
+    /// use, and in-flight effect marker before an executor can be invoked.
+    /// The default is false so an older store fails before decision network
+    /// access instead of admitting an automatically repeatable effect.
+    fn supports_uncertain_effect_reconciliation(&self) -> bool {
+        false
+    }
+
+    /// Atomically admit the first effect attempt for this exact intent. A
+    /// `SingleUse` admission also consumes the authorization in the same
+    /// transaction. Once `Started` has been returned, every later call must
+    /// return `AlreadyInFlight` or `AlreadyCompleted`; it must never reopen the
+    /// executor boundary.
+    fn begin_effect_attempt(
+        &self,
+        _intent: ExecutionIntent,
+        _authorization_use: EffectAuthorizationUse,
+    ) -> DurableStoreFuture<EffectAttemptClaim> {
+        Box::pin(async {
+            Err(ClavenarError::InvalidConfig(
+                "durable execution store does not support uncertain-effect reconciliation".into(),
+            ))
+        })
+    }
+
+    /// Load the exact durable intent for an in-flight authorization. This is
+    /// used only by explicit reconciliation and must not change its state.
+    fn load_uncertain_intent(
+        &self,
+        _authorization_id: Uuid,
+    ) -> DurableStoreFuture<Option<ExecutionIntent>> {
+        Box::pin(async {
+            Err(ClavenarError::InvalidConfig(
+                "durable execution store does not support uncertain-effect reconciliation".into(),
+            ))
+        })
+    }
+
     fn commit_effect_and_enqueue_receipt(
         &self,
         completion: ExecutionCompletion,
@@ -81,6 +127,7 @@ const MAX_OUTBOX_FLUSH: usize = 128;
 pub(crate) struct RegisteredToolExecutor {
     id: String,
     callback: Arc<ToolExecutorCallback>,
+    effect_lookup: Option<Arc<ToolEffectLookupCallback>>,
 }
 
 impl RegisteredToolExecutor {
@@ -92,6 +139,7 @@ impl RegisteredToolExecutor {
         Self {
             id: DEFAULT_EXECUTOR_ID.into(),
             callback: Arc::new(move |request| Box::pin(executor(request.execution_payload))),
+            effect_lookup: None,
         }
     }
 
@@ -103,6 +151,25 @@ impl RegisteredToolExecutor {
         Self {
             id: executor_id,
             callback: Arc::new(move |request| Box::pin(executor(request))),
+            effect_lookup: None,
+        }
+    }
+
+    pub(crate) fn new_reconciling<F, Fut, L, LookupFut>(
+        executor_id: String,
+        executor: F,
+        effect_lookup: L,
+    ) -> Self
+    where
+        F: Fn(ToolExecutionRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+        L: Fn(EffectLookupRequest) -> LookupFut + Send + Sync + 'static,
+        LookupFut: Future<Output = Result<EffectLookupOutcome, ClavenarError>> + Send + 'static,
+    {
+        Self {
+            id: executor_id,
+            callback: Arc::new(move |request| Box::pin(executor(request))),
+            effect_lookup: Some(Arc::new(move |request| Box::pin(effect_lookup(request)))),
         }
     }
 
@@ -111,6 +178,16 @@ impl RegisteredToolExecutor {
         request: ToolExecutionRequest,
     ) -> Result<ExecutionEffect, ClavenarError> {
         (self.callback)(request).await
+    }
+
+    async fn lookup_effect(
+        &self,
+        request: EffectLookupRequest,
+    ) -> Option<Result<EffectLookupOutcome, ClavenarError>> {
+        match &self.effect_lookup {
+            Some(lookup) => Some(lookup(request).await),
+            None => None,
+        }
     }
 }
 
@@ -143,7 +220,10 @@ pub const DURABLE_EXECUTION_OUTBOX_CONTRACT: &str =
     include_str!("../contracts/durable-execution-outbox-v1.json");
 pub const PENDING_AUTHORIZATION_CONTRACT_DOCUMENT: &str =
     include_str!("../contracts/pending-authorization-v1.json");
+pub const UNCERTAIN_EFFECT_RECONCILIATION_CONTRACT: &str =
+    include_str!("../contracts/uncertain-effect-reconciliation-v1.json");
 pub const DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT: &str = "clavenar.sdk-durable-intent-outbox/v1";
+pub const UNCERTAIN_EFFECT_CONTRACT: &str = "clavenar.uncertain-effect/v1";
 
 const MAX_BATCH_CALLS: usize = 128;
 
@@ -356,6 +436,24 @@ pub struct ExecutionIntent {
     pub authorization: SignedAuthorization,
 }
 
+/// Whether the durable in-flight transition consumes a direct decision or a
+/// one-use human-approved authorization.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectAuthorizationUse {
+    Direct,
+    SingleUse,
+}
+
+/// Result of the store's atomic effect-attempt admission.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectAttemptClaim {
+    Started,
+    AlreadyInFlight,
+    AlreadyCompleted,
+}
+
 /// Exact input to an idempotency-capable registered tool executor.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
@@ -364,6 +462,16 @@ pub struct ToolExecutionRequest {
     pub authorization_id: Uuid,
     pub executor_id: String,
     pub execution_payload: Value,
+}
+
+/// Exact, non-executing query supplied to a registered effect lookup.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EffectLookupRequest {
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub executor_id: String,
+    pub payload_sha256: String,
 }
 
 impl Deref for ToolExecutionRequest {
@@ -413,10 +521,22 @@ struct UnsignedExecutionReceipt<'a> {
     effect_id: &'a str,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct ExecutionEffect {
     pub result: Value,
     pub effect_id: String,
+}
+
+/// Executor-side idempotency/effect lookup result. `NotFound` is not
+/// permission to execute again automatically; only `Found` can complete
+/// reconciliation.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EffectLookupOutcome {
+    Found { effect: ExecutionEffect },
+    NotFound,
+    Ambiguous,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -433,6 +553,40 @@ pub struct ReceiptRecorded {
 pub enum AuthorizationClaim {
     Claimed,
     AlreadyClaimed,
+}
+
+/// Why an exact effect cannot currently be reported complete. Every reason is
+/// non-executable and requires explicit reconciliation or human handling.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UncertainEffectReason {
+    InFlightAfterPriorAttempt,
+    ExecutorOutcomeUnknown,
+    LookupNotRegistered,
+    LookupUnavailable,
+    EffectNotFound,
+    LookupAmbiguous,
+    LookupInvalid,
+    DurableIntentUnavailable,
+    ReconciledEffectPersistenceFailed,
+}
+
+/// Serializable, non-executable handle for an effect whose exact durable
+/// attempt crossed the in-flight boundary without a trusted completion.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UncertainExecution {
+    pub contract: String,
+    pub status: String,
+    pub reason: UncertainEffectReason,
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub tenant: String,
+    pub workload_id: String,
+    pub workload_spiffe: String,
+    pub payload_sha256: String,
+    pub executor_id: String,
+    pub effect_lookup_registered: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -454,6 +608,11 @@ enum AuthorizationState {
     Pending(PendingAuthorization),
 }
 
+enum KnownEffectCompletionError {
+    PersistenceUncertain,
+    ReceiptDelivery(ClavenarError),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutionOutcome {
     pub receipt: ReceiptRecorded,
@@ -465,6 +624,12 @@ pub struct ExecutionOutcome {
 pub enum ResumableExecutionOutcome {
     Pending(PendingAuthorization),
     Completed(ExecutionOutcome),
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExecutionReconciliationOutcome {
+    Completed(ExecutionOutcome),
+    Uncertain(UncertainExecution),
 }
 
 impl ClavenarClient {
@@ -738,6 +903,114 @@ impl ClavenarClient {
         Ok(delivered)
     }
 
+    /// Reconcile one explicit uncertain effect through the registered
+    /// executor's idempotency lookup. This method never invokes the executor.
+    /// A missing, unavailable, ambiguous, or invalid lookup result remains an
+    /// explicit uncertain outcome for later reconciliation or human handling.
+    pub async fn reconcile_uncertain_effect(
+        &self,
+        uncertain: &UncertainExecution,
+    ) -> Result<ExecutionReconciliationOutcome, ClavenarError> {
+        validate_uncertain_execution(uncertain)?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
+        if executor.id != uncertain.executor_id {
+            return Err(ClavenarError::InvalidConfig(
+                "uncertain effect is bound to a different registered executor".into(),
+            ));
+        }
+        let intent = match store
+            .load_uncertain_intent(uncertain.authorization_id)
+            .await
+        {
+            Ok(Some(intent)) => intent,
+            Ok(None) | Err(_) => {
+                return Ok(ExecutionReconciliationOutcome::Uncertain(
+                    uncertain_with_reason(
+                        uncertain,
+                        UncertainEffectReason::DurableIntentUnavailable,
+                        executor.effect_lookup.is_some(),
+                    ),
+                ));
+            }
+        };
+        if validate_uncertain_intent(uncertain, &intent).is_err() {
+            return Ok(ExecutionReconciliationOutcome::Uncertain(
+                uncertain_with_reason(
+                    uncertain,
+                    UncertainEffectReason::LookupInvalid,
+                    executor.effect_lookup.is_some(),
+                ),
+            ));
+        }
+        let lookup = executor
+            .lookup_effect(EffectLookupRequest {
+                authorization_id: intent.authorization_id,
+                idempotency_id: intent.idempotency_id,
+                executor_id: intent.executor_id.clone(),
+                payload_sha256: intent.payload_sha256.clone(),
+            })
+            .await;
+        let lookup = match lookup {
+            None => {
+                return Ok(ExecutionReconciliationOutcome::Uncertain(
+                    uncertain_with_reason(
+                        uncertain,
+                        UncertainEffectReason::LookupNotRegistered,
+                        false,
+                    ),
+                ));
+            }
+            Some(Err(_)) => {
+                return Ok(ExecutionReconciliationOutcome::Uncertain(
+                    uncertain_with_reason(
+                        uncertain,
+                        UncertainEffectReason::LookupUnavailable,
+                        true,
+                    ),
+                ));
+            }
+            Some(Ok(outcome)) => outcome,
+        };
+        let effect = match lookup {
+            EffectLookupOutcome::Found { effect } => effect,
+            EffectLookupOutcome::NotFound => {
+                return Ok(ExecutionReconciliationOutcome::Uncertain(
+                    uncertain_with_reason(uncertain, UncertainEffectReason::EffectNotFound, true),
+                ));
+            }
+            EffectLookupOutcome::Ambiguous => {
+                return Ok(ExecutionReconciliationOutcome::Uncertain(
+                    uncertain_with_reason(uncertain, UncertainEffectReason::LookupAmbiguous, true),
+                ));
+            }
+        };
+        if validate_execution_effect(&effect).is_err() {
+            return Ok(ExecutionReconciliationOutcome::Uncertain(
+                uncertain_with_reason(uncertain, UncertainEffectReason::LookupInvalid, true),
+            ));
+        }
+        match self
+            .complete_known_effect(
+                signing_key,
+                store,
+                intent.authorization,
+                effect,
+                &executor.id,
+            )
+            .await
+        {
+            Ok(completed) => Ok(ExecutionReconciliationOutcome::Completed(completed)),
+            Err(KnownEffectCompletionError::PersistenceUncertain) => Ok(
+                ExecutionReconciliationOutcome::Uncertain(uncertain_with_reason(
+                    uncertain,
+                    UncertainEffectReason::ReconciledEffectPersistenceFailed,
+                    true,
+                )),
+            ),
+            Err(KnownEffectCompletionError::ReceiptDelivery(error)) => Err(error),
+        }
+    }
+
     async fn authorize_payload(
         &self,
         idempotency_id: Uuid,
@@ -836,6 +1109,7 @@ impl ClavenarClient {
                 "durable_execution_store is required for SDK-governed execution".into(),
             )
         })?;
+        require_uncertain_effect_store(store)?;
         Ok((executor, signing_key, store))
     }
 
@@ -860,32 +1134,79 @@ impl ClavenarClient {
             executor_id: executor.id.clone(),
             authorization: authorization.clone(),
         };
-        if single_use {
-            require_single_use_store(store)?;
-            match store.claim_intent_once(intent).await? {
-                AuthorizationClaim::Claimed => {}
-                AuthorizationClaim::AlreadyClaimed => {
-                    return Err(ClavenarError::InvalidConfig(
-                        "pending authorization was already claimed".into(),
-                    ));
-                }
-            }
+        let uncertain = uncertain_from_intent(
+            &intent,
+            UncertainEffectReason::ExecutorOutcomeUnknown,
+            executor.effect_lookup.is_some(),
+        );
+        let authorization_use = if single_use {
+            EffectAuthorizationUse::SingleUse
         } else {
-            store.commit_intent(intent).await?;
+            EffectAuthorizationUse::Direct
+        };
+        match store
+            .begin_effect_attempt(intent, authorization_use)
+            .await?
+        {
+            EffectAttemptClaim::Started => {}
+            EffectAttemptClaim::AlreadyInFlight => {
+                return Err(ClavenarError::ExecutionUncertain(Box::new(
+                    uncertain_with_reason(
+                        &uncertain,
+                        UncertainEffectReason::InFlightAfterPriorAttempt,
+                        executor.effect_lookup.is_some(),
+                    ),
+                )));
+            }
+            EffectAttemptClaim::AlreadyCompleted => {
+                return Err(ClavenarError::ExecutionAlreadyCompleted {
+                    authorization_id: claims.authorization_id,
+                    idempotency_id: claims.idempotency_id,
+                });
+            }
         }
-        let effect = executor
+        let effect = match executor
             .execute(ToolExecutionRequest {
                 idempotency_id: claims.idempotency_id,
                 authorization_id: claims.authorization_id,
                 executor_id: executor.id.clone(),
                 execution_payload: claims.execution_payload.clone(),
             })
-            .await?;
-        if effect.effect_id.is_empty() || effect.effect_id.len() > 256 {
-            return Err(ClavenarError::InvalidConfig(
-                "execution effect_id must contain 1..=256 characters".into(),
-            ));
+            .await
+        {
+            Ok(effect) => effect,
+            Err(_) => return Err(ClavenarError::ExecutionUncertain(Box::new(uncertain))),
+        };
+        if validate_execution_effect(&effect).is_err() {
+            return Err(ClavenarError::ExecutionUncertain(Box::new(
+                uncertain_with_reason(
+                    &uncertain,
+                    UncertainEffectReason::LookupInvalid,
+                    executor.effect_lookup.is_some(),
+                ),
+            )));
         }
+        match self
+            .complete_known_effect(signing_key, store, authorization, effect, &executor.id)
+            .await
+        {
+            Ok(outcome) => Ok(outcome),
+            Err(KnownEffectCompletionError::PersistenceUncertain) => {
+                Err(ClavenarError::ExecutionUncertain(Box::new(uncertain)))
+            }
+            Err(KnownEffectCompletionError::ReceiptDelivery(error)) => Err(error),
+        }
+    }
+
+    async fn complete_known_effect(
+        &self,
+        signing_key: &SigningKey,
+        store: &dyn DurableExecutionStore,
+        authorization: SignedAuthorization,
+        effect: ExecutionEffect,
+        executor_id: &str,
+    ) -> Result<ExecutionOutcome, KnownEffectCompletionError> {
+        let claims = &authorization.authorization;
         let result_sha256 = sha256(canonical_json_value(&effect.result).as_bytes());
         let unsigned = UnsignedExecutionReceipt {
             contract: EXECUTION_CONTRACT,
@@ -903,7 +1224,8 @@ impl ClavenarClient {
             result_sha256: &result_sha256,
             effect_id: &effect.effect_id,
         };
-        let canonical_unsigned = canonical_json(&unsigned)?;
+        let canonical_unsigned = canonical_json(&unsigned)
+            .map_err(|_| KnownEffectCompletionError::PersistenceUncertain)?;
         let signature: Signature = signing_key.sign(canonical_unsigned.as_bytes());
         let receipt = ExecutionReceipt {
             contract: EXECUTION_CONTRACT.into(),
@@ -932,19 +1254,21 @@ impl ClavenarClient {
                 stage: "execution.effect-recorded".into(),
                 authorization_id: claims.authorization_id,
                 idempotency_id: claims.idempotency_id,
-                executor_id: executor.id.clone(),
+                executor_id: executor_id.into(),
                 actual_result: effect.result.clone(),
                 actual_result_sha256: result_sha256,
                 effect_id: effect.effect_id.clone(),
                 receipt: receipt.clone(),
             })
-            .await?;
+            .await
+            .map_err(|_| KnownEffectCompletionError::PersistenceUncertain)?;
         if queued.receipt != receipt {
-            return Err(ClavenarError::InvalidConfig(
-                "durable execution store returned a different outbox receipt".into(),
-            ));
+            return Err(KnownEffectCompletionError::PersistenceUncertain);
         }
-        let recorded = self.deliver_outbox_entry(store, queued).await?;
+        let recorded = self
+            .deliver_outbox_entry(store, queued)
+            .await
+            .map_err(KnownEffectCompletionError::ReceiptDelivery)?;
         Ok(ExecutionOutcome {
             receipt: recorded,
             result: effect.result,
@@ -1022,6 +1346,103 @@ fn require_single_use_store(store: &dyn DurableExecutionStore) -> Result<(), Cla
     if !store.supports_single_use_authorization() {
         return Err(ClavenarError::InvalidConfig(
             "durable execution store must support atomic single-use authorization claims".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn require_uncertain_effect_store(store: &dyn DurableExecutionStore) -> Result<(), ClavenarError> {
+    if !store.supports_uncertain_effect_reconciliation() {
+        return Err(ClavenarError::InvalidConfig(
+            "durable execution store must atomically persist exact intent, authorization use, and an in-flight effect marker before decision network access".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn uncertain_from_intent(
+    intent: &ExecutionIntent,
+    reason: UncertainEffectReason,
+    effect_lookup_registered: bool,
+) -> UncertainExecution {
+    UncertainExecution {
+        contract: UNCERTAIN_EFFECT_CONTRACT.into(),
+        status: "uncertain".into(),
+        reason,
+        authorization_id: intent.authorization_id,
+        idempotency_id: intent.idempotency_id,
+        tenant: intent.tenant.clone(),
+        workload_id: intent.workload_id.clone(),
+        workload_spiffe: intent.workload_spiffe.clone(),
+        payload_sha256: intent.payload_sha256.clone(),
+        executor_id: intent.executor_id.clone(),
+        effect_lookup_registered,
+    }
+}
+
+fn uncertain_with_reason(
+    uncertain: &UncertainExecution,
+    reason: UncertainEffectReason,
+    effect_lookup_registered: bool,
+) -> UncertainExecution {
+    UncertainExecution {
+        reason,
+        effect_lookup_registered,
+        ..uncertain.clone()
+    }
+}
+
+fn validate_uncertain_execution(uncertain: &UncertainExecution) -> Result<(), ClavenarError> {
+    if uncertain.contract != UNCERTAIN_EFFECT_CONTRACT
+        || uncertain.status != "uncertain"
+        || uncertain.authorization_id.is_nil()
+        || uncertain.idempotency_id.is_nil()
+        || uncertain.tenant.is_empty()
+        || uncertain.workload_id.is_empty()
+        || uncertain.workload_spiffe.is_empty()
+        || uncertain.payload_sha256.len() != 71
+        || !uncertain.payload_sha256.starts_with("sha256:")
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "invalid uncertain-effect reconciliation handle".into(),
+        ));
+    }
+    validate_executor_id(&uncertain.executor_id)
+}
+
+fn validate_uncertain_intent(
+    uncertain: &UncertainExecution,
+    intent: &ExecutionIntent,
+) -> Result<(), ClavenarError> {
+    let claims = &intent.authorization.authorization;
+    validate_authorization(&intent.authorization, intent.idempotency_id)?;
+    if intent.contract != DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT
+        || intent.stage != "execution.intent"
+        || intent.authorization_id != uncertain.authorization_id
+        || intent.idempotency_id != uncertain.idempotency_id
+        || intent.tenant != uncertain.tenant
+        || intent.workload_id != uncertain.workload_id
+        || intent.workload_spiffe != uncertain.workload_spiffe
+        || intent.payload_sha256 != uncertain.payload_sha256
+        || intent.executor_id != uncertain.executor_id
+        || claims.authorization_id != intent.authorization_id
+        || claims.idempotency_id != intent.idempotency_id
+        || claims.tenant != intent.tenant
+        || claims.agent_id != intent.workload_id
+        || claims.agent_spiffe != intent.workload_spiffe
+        || claims.payload_sha256 != intent.payload_sha256
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "durable uncertain intent does not match its exact reconciliation handle".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_execution_effect(effect: &ExecutionEffect) -> Result<(), ClavenarError> {
+    if effect.effect_id.is_empty() || effect.effect_id.len() > 256 {
+        return Err(ClavenarError::InvalidConfig(
+            "execution effect_id must contain 1..=256 characters".into(),
         ));
     }
     Ok(())
@@ -1358,6 +1779,36 @@ mod tests {
         assert_eq!(contract["resume"]["modelReplacementCallAllowed"], false);
         assert_eq!(contract["singleUse"]["durableAtomicClaimRequired"], true);
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 5);
+    }
+
+    #[test]
+    fn uncertain_effect_reconciliation_contract_is_embedded_and_strict() {
+        let contract: Value =
+            serde_json::from_str(UNCERTAIN_EFFECT_RECONCILIATION_CONTRACT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.7");
+        assert_eq!(contract["contract"], UNCERTAIN_EFFECT_CONTRACT);
+        assert_eq!(
+            contract["durableStore"]["capabilityRequiredBeforeDecisionNetwork"],
+            true
+        );
+        assert_eq!(
+            contract["durableStore"]["atomicBoundary"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(
+            contract["automaticReexecution"]["afterExecutorErrorOrLostResponse"],
+            false
+        );
+        assert_eq!(
+            contract["reconciliation"]["executorInvocationAllowed"],
+            false
+        );
+        assert_eq!(contract["outbox"]["receiptDeliveryMayRetry"], true);
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 4);
     }
 
     #[test]

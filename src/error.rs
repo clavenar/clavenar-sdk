@@ -29,7 +29,9 @@ use thiserror::Error;
 ///   retry.
 /// * [`ClavenarError::Transport`] / [`ClavenarError::Decode`] — the request
 ///   never made it to a verdict, or the response body didn't match the
-///   shape we expect for that status. Both are typically retryable.
+///   shape we expect for that status. A decision request can be retried with
+///   its retained identity; an executor attempt must follow the explicit
+///   uncertain-effect reconciliation path instead.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum ClavenarError {
@@ -87,6 +89,23 @@ pub enum ClavenarError {
     /// surface here.
     #[error(transparent)]
     Decode(#[from] serde_json::Error),
+
+    /// A durable effect attempt began, but its exact result is not trusted.
+    /// This handle cannot authorize another executor invocation; pass it to
+    /// `ClavenarClient::reconcile_uncertain_effect` or surface it for human
+    /// handling.
+    #[error("execution effect is uncertain: {0:?}")]
+    ExecutionUncertain(Box<crate::execution::UncertainExecution>),
+
+    /// The durable store reports that this authorization already completed.
+    /// The SDK will not invoke the executor again.
+    #[error(
+        "authorization {authorization_id} for idempotency request {idempotency_id} is already durably completed"
+    )]
+    ExecutionAlreadyCompleted {
+        authorization_id: uuid::Uuid,
+        idempotency_id: uuid::Uuid,
+    },
 
     /// Caller-side construction failure — e.g. the `base_url` passed to
     /// `ClavenarClient::builder` wasn't a valid URL.

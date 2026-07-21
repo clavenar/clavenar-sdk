@@ -34,6 +34,7 @@ conflict, typed-error lift), see [`SEQUENCES.md`](./SEQUENCES.md).
 | `resume_prepared_tool_execution(&prepared, &pending)` / `resume_prepared_tool_batch_execution(&prepared, &pending)` | poll by replaying the retained prepared request with its exact pending ID/digest; approval is atomically claimed before execution | `ResumableExecutionOutcome` |
 | `execute_prepared_tool(&prepared)` / `execute_prepared_tool_batch(&prepared)` | validate and reuse the retained UUID, authorize, invoke the registered executor, and record a receipt | actual-result `ExecutionOutcome` |
 | `execute_tool(idempotency_id, name, arguments)` | authorize exact payload, invoke the builder-registered executor, `POST /execution-receipts` | actual-result `ExecutionOutcome` without executable authorization bytes |
+| `reconcile_uncertain_effect(&uncertain)` | load the exact durable in-flight intent and call only the registered executor's idempotency/effect lookup; never invokes the executor | `Completed` only for a found exact effect, otherwise an updated explicit `Uncertain` handle |
 | `flush_execution_receipt_outbox(limit)` | load bounded pending signed receipts from `DurableExecutionStore`, `POST /execution-receipts`, and mark only confirmed entries delivered; performs no tool authorization or execution | delivered receipt count |
 | `send_jsonrpc(method, params)` | `POST /mcp` — arbitrary JSON-RPC body | `serde_json::Value` |
 
@@ -48,6 +49,14 @@ digest, TTL, and poll interval before returning it. Resume requires a
 `DurableExecutionStore` whose atomic `claim_intent_once` implementation opts in
 through `supports_single_use_authorization`; repeated or concurrent claims
 fail before the registered executor.
+
+All governed execution methods also require the store's
+`supports_uncertain_effect_reconciliation` capability before decision network
+access. `begin_effect_attempt` atomically commits exact intent, authorization
+use, and an in-flight marker. Once started, duplicate calls return uncertain or
+already-completed outcomes without invoking the executor. Explicit
+reconciliation uses only a lookup registered through
+`reconciling_tool_executor`; not-found is not permission to execute again.
 
 ---
 

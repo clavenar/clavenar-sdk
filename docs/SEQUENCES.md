@@ -132,8 +132,8 @@ sequenceDiagram
     SDK->>Proxy: /mcp + side-effect-free clavenar.decision/v1 selector
     Note over Proxy: decision selector permits 0 upstream effects
     Proxy-->>SDK: Identity-signed exact execution payload
-    SDK->>Store: commit signed authorization + tenant/workload + digest + IDs
-    Store-->>SDK: durable intent committed
+    SDK->>Store: atomic exact intent + authorization use + in-flight marker
+    Store-->>SDK: first effect attempt admitted durably
     SDK->>Executor: invoke(exact authorized payload + idempotency ID)
     Executor-->>SDK: actual result + effect ID
     SDK-->>SDK: hash actual result; sign terminal receipt
@@ -157,6 +157,15 @@ result/effect and receipt are durably committed and delivery is confirmed. The d
 independently from `clavenar.execution/v1` evidence. An absent selector means
 the explicit legacy server-execution `/mcp` contract; the SDK governed path
 never retries by falling back to that mode.
+
+If the executor commits an effect but its response is lost, the SDK returns a
+serializable `clavenar.uncertain-effect/v1` handle. A repeated execute call sees
+the durable in-flight marker and releases zero additional effects. Explicit
+`reconcile_uncertain_effect` loads the exact intent and calls only the
+registered idempotency/effect lookup. `Found` persists that exact result and
+continues through the receipt outbox; `NotFound`, unavailable, ambiguous, or
+invalid lookup results remain explicitly uncertain for later reconciliation or
+human handling.
 
 Prepared single-tool and batch values own a canonical UUID before this
 sequence begins. They can be serialized and restored unchanged after a process

@@ -36,11 +36,13 @@ use clavenar_sdk::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME,
     AuditFilterParams, Auth, AuthorizationClaim, ClavenarClient, ClavenarError, DECISION_CONTRACT,
     DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT, DurableExecutionStore,
-    DurableStoreFuture, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionCompletion,
-    ExecutionEffect, ExecutionIntent, ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
-    ModelToolCall, PENDING_AUTHORIZATION_CONTRACT, PENDING_ID_HEADER,
+    DurableStoreFuture, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, EffectAttemptClaim,
+    EffectAuthorizationUse, EffectLookupOutcome, ExecutionCompletion, ExecutionEffect,
+    ExecutionIntent, ExecutionReconciliationOutcome, ExportOutcome, IDEMPOTENCY_ID_HEADER,
+    LedgerClient, ModelToolCall, PENDING_AUTHORIZATION_CONTRACT, PENDING_ID_HEADER,
     PENDING_PAYLOAD_SHA256_HEADER, PendingAuthorization, PreparedToolBatch, PreparedToolRequest,
-    ReceiptOutboxEntry, ReceiptRecorded, ResumableExecutionOutcome,
+    ReceiptOutboxEntry, ReceiptRecorded, ResumableExecutionOutcome, UncertainEffectReason,
+    UncertainExecution,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -86,6 +88,8 @@ struct MemoryExecutionState {
     delivered: Vec<(String, ReceiptRecorded)>,
     ordering: Vec<&'static str>,
     claimed_authorizations: HashSet<Uuid>,
+    in_flight_authorizations: HashSet<Uuid>,
+    completed_authorizations: HashSet<Uuid>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -142,6 +146,78 @@ impl DurableExecutionStore for MemoryExecutionStore {
         })
     }
 
+    fn supports_uncertain_effect_reconciliation(&self) -> bool {
+        true
+    }
+
+    fn begin_effect_attempt(
+        &self,
+        intent: ExecutionIntent,
+        authorization_use: EffectAuthorizationUse,
+    ) -> DurableStoreFuture<EffectAttemptClaim> {
+        let store = self.clone();
+        Box::pin(async move {
+            if store.fail_intent.load(Ordering::SeqCst) {
+                return Err(ClavenarError::InvalidConfig(
+                    "durable intent store unavailable".into(),
+                ));
+            }
+            let mut state = store.state.lock().unwrap();
+            if state
+                .intents
+                .iter()
+                .find(|existing| existing.authorization_id == intent.authorization_id)
+                .is_some_and(|existing| existing != &intent)
+            {
+                return Err(ClavenarError::InvalidConfig(
+                    "authorization intent substitution rejected".into(),
+                ));
+            }
+            if state
+                .completed_authorizations
+                .contains(&intent.authorization_id)
+            {
+                return Ok(EffectAttemptClaim::AlreadyCompleted);
+            }
+            if state
+                .in_flight_authorizations
+                .contains(&intent.authorization_id)
+            {
+                return Ok(EffectAttemptClaim::AlreadyInFlight);
+            }
+            if authorization_use == EffectAuthorizationUse::SingleUse
+                && !state.claimed_authorizations.insert(intent.authorization_id)
+            {
+                return Ok(EffectAttemptClaim::AlreadyInFlight);
+            }
+            state.ordering.push("intent");
+            state.intents.push(intent.clone());
+            state.ordering.push("in_flight");
+            state
+                .in_flight_authorizations
+                .insert(intent.authorization_id);
+            Ok(EffectAttemptClaim::Started)
+        })
+    }
+
+    fn load_uncertain_intent(
+        &self,
+        authorization_id: Uuid,
+    ) -> DurableStoreFuture<Option<ExecutionIntent>> {
+        let store = self.clone();
+        Box::pin(async move {
+            let state = store.state.lock().unwrap();
+            if !state.in_flight_authorizations.contains(&authorization_id) {
+                return Ok(None);
+            }
+            Ok(state
+                .intents
+                .iter()
+                .find(|intent| intent.authorization_id == authorization_id)
+                .cloned())
+        })
+    }
+
     fn commit_effect_and_enqueue_receipt(
         &self,
         completion: ExecutionCompletion,
@@ -154,6 +230,12 @@ impl DurableExecutionStore for MemoryExecutionStore {
             };
             let mut state = store.state.lock().unwrap();
             state.ordering.push("completion");
+            state
+                .in_flight_authorizations
+                .remove(&completion.authorization_id);
+            state
+                .completed_authorizations
+                .insert(completion.authorization_id);
             state.completions.push(completion);
             state.pending.push(entry.clone());
             Ok(entry)
@@ -195,6 +277,34 @@ impl DurableExecutionStore for MemoryExecutionStore {
             state.delivered.push((outbox_id, recorded));
             Ok(())
         })
+    }
+}
+
+#[derive(Debug)]
+struct UnsupportedExecutionStore;
+
+impl DurableExecutionStore for UnsupportedExecutionStore {
+    fn commit_intent(&self, _intent: ExecutionIntent) -> DurableStoreFuture<()> {
+        Box::pin(async { unreachable!("capability check must fail before store access") })
+    }
+
+    fn commit_effect_and_enqueue_receipt(
+        &self,
+        _completion: ExecutionCompletion,
+    ) -> DurableStoreFuture<ReceiptOutboxEntry> {
+        Box::pin(async { unreachable!("capability check must fail before store access") })
+    }
+
+    fn pending_receipts(&self, _limit: usize) -> DurableStoreFuture<Vec<ReceiptOutboxEntry>> {
+        Box::pin(async { unreachable!("capability check must fail before store access") })
+    }
+
+    fn mark_receipt_delivered(
+        &self,
+        _outbox_id: String,
+        _recorded: ReceiptRecorded,
+    ) -> DurableStoreFuture<()> {
+        Box::pin(async { unreachable!("capability check must fail before store access") })
     }
 }
 
@@ -484,9 +594,9 @@ async fn pending_poll_resume_consumes_exact_authorization_once() {
             .filter(|result| {
                 matches!(
                     result,
-                    Err(ClavenarError::InvalidConfig(message))
-                        if message.contains("already claimed")
-                )
+                    Err(ClavenarError::ExecutionUncertain(uncertain))
+                        if uncertain.reason == UncertainEffectReason::InFlightAfterPriorAttempt
+                ) || matches!(result, Err(ClavenarError::ExecutionAlreadyCompleted { .. }))
             })
             .count(),
         1
@@ -630,7 +740,7 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
     let state = store.state.lock().unwrap();
     assert_eq!(
         state.ordering,
-        ["intent", "effect", "completion", "delivered"]
+        ["intent", "in_flight", "effect", "completion", "delivered"]
     );
     assert_eq!(state.intents.len(), 1);
     assert_eq!(state.completions.len(), 1);
@@ -927,6 +1037,51 @@ async fn governed_execution_requires_durable_store_before_network() {
 }
 
 #[tokio::test]
+async fn uncertain_effect_capability_is_required_before_decision_network() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(UnsupportedExecutionStore)
+        .tool_executor(move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: Value::Null,
+                    effect_id: "unexpected".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    let error = client
+        .execute_tool(Uuid::new_v4(), "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClavenarError::InvalidConfig(message) if message.contains("in-flight effect marker"))
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
 async fn unavailable_durable_intent_store_releases_zero_executor_effects() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../contracts/execution-receipt-v1.fixture.json"
@@ -1013,6 +1168,163 @@ async fn denied_authorization_never_invokes_registered_executor() {
             .is_err()
     );
     assert_eq!(effects.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn uncertain_effect_reconciliation_never_reexecutes_after_a_lost_response() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(move || {
+                let authorization = fixture["authorization"].clone();
+                async move { (StatusCode::OK, Json(authorization)) }
+            }),
+        )
+        .route(
+            "/execution-receipts",
+            post(|Json(receipt): Json<Value>| async move {
+                (
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "status": "recorded",
+                        "contract": EXECUTION_CONTRACT,
+                        "stage": "execution.completed",
+                        "authorization_id": receipt["authorization_id"],
+                        "receipt_sha256": "sha256:uncertain-reconciled"
+                    })),
+                )
+            }),
+        );
+    let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
+    let executor_store = store.clone();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let lookup_attempts = Arc::new(AtomicUsize::new(0));
+    let callback_lookup_attempts = Arc::clone(&lookup_attempts);
+    let recovered_effect = ExecutionEffect {
+        result: json!({"ok": true, "source": "idempotency-lookup"}),
+        effect_id: "provider-lost-response-123".into(),
+    };
+    let callback_effect = recovered_effect.clone();
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store.clone())
+        .reconciling_tool_executor(
+            "payments-provider/v1",
+            move |_| {
+                let effects = Arc::clone(&executor_effects);
+                let store = executor_store.clone();
+                async move {
+                    effects.fetch_add(1, Ordering::SeqCst);
+                    store.record_effect_order();
+                    Err(ClavenarError::InvalidConfig(
+                        "provider response was lost after committing the effect".into(),
+                    ))
+                }
+            },
+            move |request| {
+                let attempts = Arc::clone(&callback_lookup_attempts);
+                let effect = callback_effect.clone();
+                async move {
+                    assert_eq!(request.executor_id, "payments-provider/v1");
+                    assert!(request.payload_sha256.starts_with("sha256:"));
+                    match attempts.fetch_add(1, Ordering::SeqCst) {
+                        0 => Ok(EffectLookupOutcome::NotFound),
+                        1 => Err(ClavenarError::InvalidConfig(
+                            "provider lookup unavailable".into(),
+                        )),
+                        2 => Ok(EffectLookupOutcome::Ambiguous),
+                        _ => Ok(EffectLookupOutcome::Found { effect }),
+                    }
+                }
+            },
+        )
+        .build()
+        .unwrap();
+    let idempotency_id = Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap();
+    let error = client
+        .execute_tool(idempotency_id, "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    let uncertain = match error {
+        ClavenarError::ExecutionUncertain(uncertain) => *uncertain,
+        other => panic!("expected uncertain execution, got {other:?}"),
+    };
+    assert_eq!(
+        uncertain.reason,
+        UncertainEffectReason::ExecutorOutcomeUnknown
+    );
+    assert!(uncertain.effect_lookup_registered);
+    let uncertain: UncertainExecution =
+        serde_json::from_slice(&serde_json::to_vec(&uncertain).unwrap()).unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    let retry = client
+        .execute_tool(idempotency_id, "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        retry,
+        ClavenarError::ExecutionUncertain(handle)
+            if handle.reason == UncertainEffectReason::InFlightAfterPriorAttempt
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+
+    let uncertain = match client.reconcile_uncertain_effect(&uncertain).await.unwrap() {
+        ExecutionReconciliationOutcome::Uncertain(uncertain) => {
+            assert_eq!(uncertain.reason, UncertainEffectReason::EffectNotFound);
+            uncertain
+        }
+        ExecutionReconciliationOutcome::Completed(_) => panic!("not-found lookup completed"),
+    };
+    let uncertain = match client.reconcile_uncertain_effect(&uncertain).await.unwrap() {
+        ExecutionReconciliationOutcome::Uncertain(uncertain) => {
+            assert_eq!(uncertain.reason, UncertainEffectReason::LookupUnavailable);
+            uncertain
+        }
+        ExecutionReconciliationOutcome::Completed(_) => panic!("unavailable lookup completed"),
+    };
+    let uncertain = match client.reconcile_uncertain_effect(&uncertain).await.unwrap() {
+        ExecutionReconciliationOutcome::Uncertain(uncertain) => {
+            assert_eq!(uncertain.reason, UncertainEffectReason::LookupAmbiguous);
+            uncertain
+        }
+        ExecutionReconciliationOutcome::Completed(_) => panic!("ambiguous lookup completed"),
+    };
+    let completed = match client.reconcile_uncertain_effect(&uncertain).await.unwrap() {
+        ExecutionReconciliationOutcome::Completed(completed) => completed,
+        ExecutionReconciliationOutcome::Uncertain(other) => {
+            panic!("found lookup remained uncertain: {other:?}")
+        }
+    };
+    assert_eq!(completed.result, recovered_effect.result);
+    assert_eq!(completed.effect_id, recovered_effect.effect_id);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(lookup_attempts.load(Ordering::SeqCst), 4);
+    let completed_retry = client
+        .execute_tool(idempotency_id, "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        completed_retry,
+        ClavenarError::ExecutionAlreadyCompleted { .. }
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.intents.len(), 1);
+    assert_eq!(state.completions.len(), 1);
+    assert_eq!(state.pending.len(), 0);
+    assert_eq!(
+        state.ordering,
+        ["intent", "in_flight", "effect", "completion", "delivered"]
+    );
     drop(shutdown);
 }
 

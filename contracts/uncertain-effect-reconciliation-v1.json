@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.7",
+  "contract": "clavenar.uncertain-effect/v1",
+  "executionEvidenceContract": "clavenar.execution/v1",
+  "durableStore": {
+    "capabilityRequiredBeforeDecisionNetwork": true,
+    "atomicBoundary": [
+      "exact-intent",
+      "authorization-use",
+      "effect-in-flight"
+    ],
+    "boundaryCommittedBeforeExecutor": true,
+    "unsupportedStoreExecutorEffects": 0
+  },
+  "uncertainOutcome": {
+    "serializable": true,
+    "successReported": false,
+    "executableAuthorizationReturned": false,
+    "replacementToolCallReturned": false,
+    "bindings": [
+      "authorization-id",
+      "idempotency-id",
+      "tenant",
+      "workload-id",
+      "workload-spiffe",
+      "exact-payload-sha256",
+      "executor-id"
+    ]
+  },
+  "automaticReexecution": {
+    "afterInFlightBoundary": false,
+    "afterCrashOrCancellation": false,
+    "afterExecutorErrorOrLostResponse": false,
+    "afterRestartOrConcurrentDuplicate": false
+  },
+  "reconciliation": {
+    "source": "registered-executor-idempotency-effect-lookup",
+    "executorInvocationAllowed": false,
+    "found": "persist-exact-result-effect-and-enqueue-receipt",
+    "notFound": "remain-explicitly-uncertain",
+    "unavailable": "remain-explicitly-uncertain",
+    "ambiguousOrInvalid": "remain-explicitly-uncertain"
+  },
+  "outbox": {
+    "receiptDeliveryMayRetry": true,
+    "toolReexecutionAllowed": false
+  },
+  "retainedFeatures": [
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}
