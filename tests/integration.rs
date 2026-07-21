@@ -33,8 +33,9 @@ use tokio::sync::oneshot;
 
 use base64::{Engine as _, engine::general_purpose};
 use clavenar_sdk::{
-    AuditFilterParams, Auth, ClavenarClient, ClavenarError, EXECUTION_CONTRACT,
-    EXECUTION_CONTRACT_HEADER, ExecutionEffect, ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
+    AuditFilterParams, Auth, ClavenarClient, ClavenarError, DECISION_CONTRACT,
+    DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
+    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -94,10 +95,11 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
                  Json(body): Json<Value>| async move {
                     assert_eq!(
                         headers
-                            .get(EXECUTION_CONTRACT_HEADER)
+                            .get(DECISION_CONTRACT_HEADER)
                             .and_then(|value| value.to_str().ok()),
-                        Some(EXECUTION_CONTRACT)
+                        Some(DECISION_CONTRACT)
                     );
+                    assert!(headers.get(EXECUTION_CONTRACT_HEADER).is_none());
                     assert_eq!(
                         headers
                             .get(IDEMPOTENCY_ID_HEADER)

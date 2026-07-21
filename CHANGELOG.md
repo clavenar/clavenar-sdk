@@ -19,12 +19,17 @@ at that version".
   through `ClavenarClientBuilder::tool_executor`. Per-call executor injection
   was removed, and `ExecutionOutcome` returns the actual result, effect ID, and
   terminal receipt metadata without executable authorization bytes.
+- Side-effect-free authorization now selects `clavenar.decision/v1`
+  independently from `clavenar.execution/v1` receipt evidence. The governed
+  path never falls back to unselected server-executed `/mcp`.
 
 ### Security
 
 - Missing executor configuration fails before authorization. Denied or invalid
   authorization never reaches the executor, and receipt persistence failure
   cannot report successful governed execution.
+- Lite rejects decision and legacy execution selectors before upstream access
+  until its compatible durable governed-execution path is available.
 
 ## [0.2.0]
 

@@ -67,9 +67,10 @@ pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use execution::{
-    Authorization, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
-    ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature,
-    PolicyBundleProvenance, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT, SignedAuthorization,
+    Authorization, DECISION_CONTRACT, DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT,
+    EXECUTION_CONTRACT_HEADER, ExecutionEffect, ExecutionOutcome, ExecutionReceipt,
+    IDEMPOTENCY_ID_HEADER, IdentitySignature, PolicyBundleProvenance, ReceiptRecorded,
+    SDK_EXECUTION_AUTHORITY_CONTRACT, SIDE_EFFECT_FREE_DECISION_CONTRACT, SignedAuthorization,
     WorkloadSignature,
 };
 pub use hil::{

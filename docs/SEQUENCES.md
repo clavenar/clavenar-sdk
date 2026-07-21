@@ -125,7 +125,8 @@ sequenceDiagram
 
     Caller->>SDK: execute_tool(idempotency_id, name, arguments)
     SDK-->>SDK: require registered executor + workload signing key
-    SDK->>Proxy: side-effect-free clavenar.execution/v1 authorization
+    SDK->>Proxy: /mcp + side-effect-free clavenar.decision/v1 selector
+    Note over Proxy: decision selector permits 0 upstream effects
     Proxy-->>SDK: Identity-signed exact execution payload
     SDK->>Executor: invoke(exact authorized payload)
     Executor-->>SDK: actual result + effect ID
@@ -139,7 +140,10 @@ sequenceDiagram
 
 Missing configuration fails before the authorization request. A deny or invalid
 authorization never invokes the executor. Receipt failure returns an error and
-does not report governed execution success.
+does not report governed execution success. The decision selector is versioned
+independently from `clavenar.execution/v1` evidence. An absent selector means
+the explicit legacy server-execution `/mcp` contract; the SDK governed path
+never retries by falling back to that mode.
 
 ---
 

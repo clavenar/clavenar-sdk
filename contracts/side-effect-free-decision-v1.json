@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.2",
+  "contract": "clavenar.side-effect-free-decision/v1",
+  "decisionWireContract": "clavenar.decision/v1",
+  "executionEvidenceContract": "clavenar.execution/v1",
+  "ingress": {
+    "route": "/mcp",
+    "selectorHeader": "x-clavenar-decision-contract",
+    "idempotencyHeader": "x-clavenar-idempotency-id",
+    "selectorRequired": true
+  },
+  "decision": {
+    "upstreamEffects": 0,
+    "proxyExecutionAllowed": false,
+    "sdkFallbackToServerExecutionAllowed": false
+  },
+  "serverExecution": {
+    "route": "/mcp",
+    "selector": "decision-headers-absent",
+    "compatibilityBehaviorUnchanged": true
+  },
+  "litePosture": {
+    "decisionSupport": "fail-closed-until-shared-durability",
+    "rejectBeforeUpstream": [
+      "complete-decision-selector",
+      "partial-decision-selector",
+      "unknown-decision-selector",
+      "legacy-execution-selector"
+    ]
+  },
+  "retainedFeatures": [
+    "WP-06.3",
+    "WP-06.4",
+    "WP-06.5",
+    "WP-06.6",
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}

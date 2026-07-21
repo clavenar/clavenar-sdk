@@ -49,11 +49,15 @@ impl fmt::Debug for RegisteredToolExecutor {
     }
 }
 
+pub const DECISION_CONTRACT: &str = "clavenar.decision/v1";
+pub const DECISION_CONTRACT_HEADER: &str = "x-clavenar-decision-contract";
 pub const EXECUTION_CONTRACT: &str = "clavenar.execution/v1";
 pub const EXECUTION_CONTRACT_HEADER: &str = "x-clavenar-execution-contract";
 pub const IDEMPOTENCY_ID_HEADER: &str = "x-clavenar-idempotency-id";
 pub const SDK_EXECUTION_AUTHORITY_CONTRACT: &str =
     include_str!("../contracts/sdk-execution-authority-v1.json");
+pub const SIDE_EFFECT_FREE_DECISION_CONTRACT: &str =
+    include_str!("../contracts/side-effect-free-decision-v1.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -195,7 +199,7 @@ impl ClavenarClient {
             .http
             .client()
             .post(endpoint)
-            .header(EXECUTION_CONTRACT_HEADER, EXECUTION_CONTRACT)
+            .header(DECISION_CONTRACT_HEADER, DECISION_CONTRACT)
             .header(IDEMPOTENCY_ID_HEADER, idempotency_id.to_string())
             .json(&body);
         if let Auth::Bearer(token) = &self.auth {
@@ -434,5 +438,27 @@ mod tests {
             true
         );
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn side_effect_free_decision_contract_is_embedded_and_strict() {
+        let contract: Value = serde_json::from_str(SIDE_EFFECT_FREE_DECISION_CONTRACT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.2");
+        assert_eq!(contract["decisionWireContract"], DECISION_CONTRACT);
+        assert_eq!(contract["executionEvidenceContract"], EXECUTION_CONTRACT);
+        assert_eq!(contract["decision"]["upstreamEffects"], 0);
+        assert_eq!(
+            contract["decision"]["sdkFallbackToServerExecutionAllowed"],
+            false
+        );
+        assert_eq!(
+            contract["litePosture"]["rejectBeforeUpstream"]
+                .as_array()
+                .unwrap()
+                .len(),
+            4
+        );
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 9);
     }
 }

@@ -72,14 +72,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ## Exact SDK-governed execution
 
-`execute_tool` selects `clavenar.execution/v1`: Proxy runs its complete
-security/HIL pipeline and signs the exact canonical payload, but performs no
-upstream effect. The SDK passes that signed payload to your executor, signs a
+`execute_tool` selects the side-effect-free `clavenar.decision/v1` decision
+mode. Proxy runs its complete security/HIL pipeline and signs the exact
+canonical payload as `clavenar.execution/v1` evidence, but performs no upstream
+effect. The SDK passes that signed payload to your executor, signs a
 terminal receipt, and waits for the receipt's synchronous Ledger commit. The
 executor is registered when the client is built and shared by client clones;
 the governed call never returns an executable payload to a host tool loop.
 The exact invariant set is
 [`contracts/sdk-execution-authority-v1.json`](contracts/sdk-execution-authority-v1.json).
+The selector/server-execution separation is fixed by
+[`contracts/side-effect-free-decision-v1.json`](contracts/side-effect-free-decision-v1.json):
+ordinary `/mcp` remains the legacy server-executed compatibility path only when
+decision headers are absent. Lite rejects decision selectors before upstream
+access until its shared durability contract is available; the SDK never falls
+back to unselected `/mcp` after a decision request.
 
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
