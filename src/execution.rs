@@ -64,6 +64,8 @@ pub const SIDE_EFFECT_FREE_DECISION_CONTRACT: &str =
     include_str!("../contracts/side-effect-free-decision-v1.json");
 pub const ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT: &str =
     include_str!("../contracts/atomic-tool-call-batch-v1.json");
+pub const STABLE_REQUEST_IDENTITY_CONTRACT: &str =
+    include_str!("../contracts/stable-request-identity-v1.json");
 
 const MAX_BATCH_CALLS: usize = 128;
 
@@ -74,6 +76,92 @@ pub struct ModelToolCall {
     pub id: String,
     pub name: String,
     pub arguments: Value,
+}
+
+/// A serializable single-tool request whose stable identity exists before any
+/// authorization or execution network attempt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedToolRequest {
+    idempotency_id: Uuid,
+    name: String,
+    arguments: Value,
+}
+
+impl PreparedToolRequest {
+    /// Prepare a new request and allocate its stable identity locally.
+    pub fn new(name: impl Into<String>, arguments: Value) -> Result<Self, ClavenarError> {
+        Self::restore(Uuid::new_v4(), name, arguments)
+    }
+
+    /// Restore a previously persisted request without replacing its identity.
+    pub fn restore(
+        idempotency_id: Uuid,
+        name: impl Into<String>,
+        arguments: Value,
+    ) -> Result<Self, ClavenarError> {
+        let prepared = Self {
+            idempotency_id,
+            name: name.into(),
+            arguments,
+        };
+        prepared.validate()?;
+        Ok(prepared)
+    }
+
+    pub fn idempotency_id(&self) -> Uuid {
+        self.idempotency_id
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn arguments(&self) -> &Value {
+        &self.arguments
+    }
+
+    fn validate(&self) -> Result<(), ClavenarError> {
+        validate_tool_name(&self.name)
+    }
+}
+
+/// A serializable atomic batch whose stable identity exists before any
+/// authorization or execution network attempt.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedToolBatch {
+    idempotency_id: Uuid,
+    calls: Vec<ModelToolCall>,
+}
+
+impl PreparedToolBatch {
+    /// Prepare a new batch and allocate its stable identity locally.
+    pub fn new(calls: Vec<ModelToolCall>) -> Result<Self, ClavenarError> {
+        Self::restore(Uuid::new_v4(), calls)
+    }
+
+    /// Restore a previously persisted batch without replacing its identity.
+    pub fn restore(idempotency_id: Uuid, calls: Vec<ModelToolCall>) -> Result<Self, ClavenarError> {
+        let prepared = Self {
+            idempotency_id,
+            calls,
+        };
+        prepared.validate()?;
+        Ok(prepared)
+    }
+
+    pub fn idempotency_id(&self) -> Uuid {
+        self.idempotency_id
+    }
+
+    pub fn calls(&self) -> &[ModelToolCall] {
+        &self.calls
+    }
+
+    fn validate(&self) -> Result<(), ClavenarError> {
+        validate_model_tool_calls(&self.calls)
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -217,6 +305,21 @@ pub struct ExecutionOutcome {
 }
 
 impl ClavenarClient {
+    /// Authorize a locally prepared single-tool request without changing its
+    /// retained identity.
+    pub async fn authorize_prepared_tool(
+        &self,
+        prepared: &PreparedToolRequest,
+    ) -> Result<SignedAuthorization, ClavenarError> {
+        prepared.validate()?;
+        self.authorize_tool(
+            prepared.idempotency_id,
+            &prepared.name,
+            prepared.arguments.clone(),
+        )
+        .await
+    }
+
     /// Request side-effect-free authorization for an exact tool payload.
     /// Reusing `idempotency_id` is safe only with byte-equivalent input.
     pub async fn authorize_tool(
@@ -248,6 +351,17 @@ impl ClavenarClient {
         Ok(authorization)
     }
 
+    /// Authorize a locally prepared atomic batch without changing its retained
+    /// identity or sibling order.
+    pub async fn authorize_prepared_tool_batch(
+        &self,
+        prepared: &PreparedToolBatch,
+    ) -> Result<SignedAuthorization, ClavenarError> {
+        prepared.validate()?;
+        self.authorize_tool_batch(prepared.idempotency_id, prepared.calls.clone())
+            .await
+    }
+
     /// Authorize, execute through the registered executor, and record one
     /// exact tool effect.
     ///
@@ -267,6 +381,21 @@ impl ClavenarClient {
             .await
     }
 
+    /// Execute a locally prepared single-tool request with its retained
+    /// identity.
+    pub async fn execute_prepared_tool(
+        &self,
+        prepared: &PreparedToolRequest,
+    ) -> Result<ExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        self.execute_tool(
+            prepared.idempotency_id,
+            &prepared.name,
+            prepared.arguments.clone(),
+        )
+        .await
+    }
+
     /// Atomically authorize a complete model tool-call batch, then invoke the
     /// registered SDK executor exactly once with the whole signed payload.
     /// Individual siblings are never returned to the host's normal tool loop.
@@ -278,6 +407,17 @@ impl ClavenarClient {
         let (executor, signing_key) = self.execution_dependencies()?;
         let authorization = self.authorize_tool_batch(idempotency_id, calls).await?;
         self.execute_authorization(executor, signing_key, authorization)
+            .await
+    }
+
+    /// Execute a locally prepared atomic batch with its retained identity and
+    /// sibling order.
+    pub async fn execute_prepared_tool_batch(
+        &self,
+        prepared: &PreparedToolBatch,
+    ) -> Result<ExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        self.execute_tool_batch(prepared.idempotency_id, prepared.calls.clone())
             .await
     }
 
@@ -444,6 +584,15 @@ fn validate_model_tool_calls(calls: &[ModelToolCall]) -> Result<(), ClavenarErro
                 "atomic tool-call names must contain 1..=256 characters".into(),
             ));
         }
+    }
+    Ok(())
+}
+
+fn validate_tool_name(name: &str) -> Result<(), ClavenarError> {
+    if name.is_empty() || name.len() > 256 {
+        return Err(ClavenarError::InvalidConfig(
+            "tool name must contain 1..=256 characters".into(),
+        ));
     }
     Ok(())
 }
@@ -647,5 +796,48 @@ mod tests {
         assert_eq!(contract["constraints"]["maximumCalls"], 128);
         assert_eq!(contract["releaseBoundary"]["partialReleaseAllowed"], false);
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 8);
+    }
+
+    #[test]
+    fn stable_request_identity_contract_is_embedded_and_strict() {
+        let contract: Value = serde_json::from_str(STABLE_REQUEST_IDENTITY_CONTRACT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.4");
+        assert_eq!(contract["contract"], "clavenar.stable-request-identity/v1");
+        assert_eq!(contract["identity"]["createdBeforeNetwork"], true);
+        assert_eq!(contract["identity"]["networkGeneratedOrReplaced"], false);
+        assert_eq!(
+            contract["preparedRequests"]["invalidRequestNetworkAttempts"],
+            0
+        );
+        assert_eq!(
+            contract["retryBehavior"]["sameIdentityAndPayloadUpstreamEffects"],
+            0
+        );
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn prepared_requests_are_validated_and_round_trip_with_the_same_identity() {
+        assert!(PreparedToolRequest::new("", json!({})).is_err());
+        assert!(PreparedToolBatch::new(Vec::new()).is_err());
+
+        let request =
+            PreparedToolRequest::new("payments.lookup", json!({"account": "one"})).unwrap();
+        let encoded = serde_json::to_string(&request).unwrap();
+        let restored: PreparedToolRequest = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored, request);
+        assert_eq!(restored.idempotency_id(), request.idempotency_id());
+
+        let batch = PreparedToolBatch::new(vec![ModelToolCall {
+            id: "call-a".into(),
+            name: "payments.lookup".into(),
+            arguments: json!({"account": "one"}),
+        }])
+        .unwrap();
+        let encoded = serde_json::to_string(&batch).unwrap();
+        let restored: PreparedToolBatch = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(restored, batch);
+        assert_eq!(restored.idempotency_id(), batch.idempotency_id());
     }
 }

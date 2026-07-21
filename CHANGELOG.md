@@ -9,6 +9,10 @@ at that version".
 
 ### Added
 
+- `PreparedToolRequest` and `PreparedToolBatch` allocate a stable UUID before
+  network access, serialize for durable retention, and restore without
+  replacing that identity. Prepared authorization and execution APIs reuse it
+  unchanged for exact decision retries.
 - `execute_tool_batch` and `authorize_tool_batch` commit a bounded ordered set
   of uniquely identified model tool calls in one side-effect-free decision.
   The registered executor sees the complete signed batch exactly once only
@@ -29,6 +33,9 @@ at that version".
 
 ### Security
 
+- Prepared requests are revalidated before HTTP construction. Invalid restored
+  values fail locally with zero network attempts, and no governed network path
+  creates or replaces a request identity.
 - Deny, review, expiry, cancellation, policy change, invalid structure, and
   call-identity drift release zero batch siblings. Modified batches must retain
   call identity/order and arrive as one complete re-gated signed payload.

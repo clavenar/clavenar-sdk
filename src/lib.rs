@@ -71,8 +71,9 @@ pub use execution::{
     ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME, Authorization, DECISION_CONTRACT,
     DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
     ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature, ModelToolCall,
-    PolicyBundleProvenance, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT,
-    SIDE_EFFECT_FREE_DECISION_CONTRACT, SignedAuthorization, WorkloadSignature,
+    PolicyBundleProvenance, PreparedToolBatch, PreparedToolRequest, ReceiptRecorded,
+    SDK_EXECUTION_AUTHORITY_CONTRACT, SIDE_EFFECT_FREE_DECISION_CONTRACT,
+    STABLE_REQUEST_IDENTITY_CONTRACT, SignedAuthorization, WorkloadSignature,
 };
 pub use hil::{
     ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,

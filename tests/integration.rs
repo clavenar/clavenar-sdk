@@ -36,7 +36,8 @@ use clavenar_sdk::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME,
     AuditFilterParams, Auth, ClavenarClient, ClavenarError, DECISION_CONTRACT,
     DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
-    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient, ModelToolCall,
+    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient, ModelToolCall, PreparedToolBatch,
+    PreparedToolRequest,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -119,6 +120,97 @@ fn batch_authorization(execution_payload: Value, modified: bool) -> Value {
         },
     );
     signed
+}
+
+#[tokio::test]
+async fn prepared_request_identity_exists_before_network_and_is_reused() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let authorization = fixture["authorization"].clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move |headers: HeaderMap, Json(body): Json<Value>| {
+            let authorization = authorization.clone();
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                let retained = "cfcc8767-4c73-41cc-8ece-b855863924c4";
+                assert_eq!(body["id"], retained);
+                assert_eq!(
+                    headers
+                        .get(IDEMPOTENCY_ID_HEADER)
+                        .and_then(|value| value.to_str().ok()),
+                    Some(retained)
+                );
+                (StatusCode::OK, Json(authorization))
+            }
+        }),
+    );
+    let prepared = PreparedToolRequest::restore(
+        Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+        "payments.transfer",
+        json!({"amount": 100}),
+    )
+    .unwrap();
+    let persisted = serde_json::to_vec(&prepared).unwrap();
+    let restored: PreparedToolRequest = serde_json::from_slice(&persisted).unwrap();
+    assert_eq!(restored, prepared);
+
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
+    let first = client.authorize_prepared_tool(&prepared).await.unwrap();
+    let repeated = client.authorize_prepared_tool(&restored).await.unwrap();
+    assert_eq!(repeated, first);
+    assert_eq!(requests.load(Ordering::SeqCst), 2);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn invalid_restored_prepared_requests_fail_before_network() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }),
+    );
+    let invalid_request: PreparedToolRequest = serde_json::from_value(json!({
+        "idempotency_id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+        "name": "",
+        "arguments": {}
+    }))
+    .unwrap();
+    let invalid_batch: PreparedToolBatch = serde_json::from_value(json!({
+        "idempotency_id": "cfcc8767-4c73-41cc-8ece-b855863924c4",
+        "calls": []
+    }))
+    .unwrap();
+
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url).unwrap().build().unwrap();
+    assert!(
+        client
+            .authorize_prepared_tool(&invalid_request)
+            .await
+            .is_err()
+    );
+    assert!(
+        client
+            .authorize_prepared_tool_batch(&invalid_batch)
+            .await
+            .is_err()
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    drop(shutdown);
 }
 
 #[tokio::test]

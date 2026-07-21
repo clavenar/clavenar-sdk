@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.4",
+  "contract": "clavenar.stable-request-identity/v1",
+  "decisionWireContract": "clavenar.decision/v1",
+  "identity": {
+    "owner": "client-prepared-request",
+    "format": "canonical-uuid",
+    "createdBeforeNetwork": true,
+    "serializable": true,
+    "restorable": true,
+    "networkGeneratedOrReplaced": false
+  },
+  "preparedRequests": {
+    "singleTool": true,
+    "atomicToolCallBatch": true,
+    "validatedBeforeNetwork": true,
+    "invalidRequestNetworkAttempts": 0
+  },
+  "retryBehavior": {
+    "sameIdentityAndPayload": "return-exact-retained-decision",
+    "sameIdentityAndPayloadUpstreamEffects": 0,
+    "sameIdentityChangedPayload": "conflict",
+    "automaticExecution": false
+  },
+  "retainedFeatures": [
+    "WP-06.5",
+    "WP-06.6",
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}

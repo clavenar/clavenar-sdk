@@ -123,7 +123,10 @@ sequenceDiagram
     participant Executor as registered tool executor
     participant Ledger
 
-    Caller->>SDK: execute_tool(idempotency_id, name, arguments)
+    Caller->>SDK: PreparedToolRequest::new(name, arguments)
+    SDK-->>Caller: serializable request + locally allocated UUID
+    Caller->>SDK: execute_prepared_tool(&prepared)
+    SDK-->>SDK: validate retained identity and payload before HTTP construction
     SDK-->>SDK: require registered executor + workload signing key
     SDK->>Proxy: /mcp + side-effect-free clavenar.decision/v1 selector
     Note over Proxy: decision selector permits 0 upstream effects
@@ -144,6 +147,13 @@ does not report governed execution success. The decision selector is versioned
 independently from `clavenar.execution/v1` evidence. An absent selector means
 the explicit legacy server-execution `/mcp` contract; the SDK governed path
 never retries by falling back to that mode.
+
+Prepared single-tool and batch values own a canonical UUID before this
+sequence begins. They can be serialized and restored unchanged after a process
+restart. Repeated authorization of the exact prepared value returns Proxy's
+retained signed decision with no upstream execution; a changed payload under
+the same identity conflicts. Invalid restored values stop before any network
+attempt.
 
 `execute_tool_batch` uses the same authority chain with one canonical
 `clavenar/tools.batch` envelope. Proxy evaluates and signs the complete ordered

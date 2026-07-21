@@ -28,7 +28,9 @@ conflict, typed-error lift), see [`SEQUENCES.md`](./SEQUENCES.md).
 | Method | HTTP route | Returns |
 |---|---|---|
 | `call_tool(name, arguments)` | `POST /mcp` — JSON-RPC `tools/call` body | `serde_json::Value` |
+| `authorize_prepared_tool(&prepared)` / `authorize_prepared_tool_batch(&prepared)` | validate a serializable, pre-network stable UUID and send `POST /mcp` with the side-effect-free decision selector | `SignedAuthorization` |
 | `authorize_tool(idempotency_id, name, arguments)` | `POST /mcp` with the `clavenar.decision/v1` selector; side-effect-free and no server-execution fallback | `SignedAuthorization` |
+| `execute_prepared_tool(&prepared)` / `execute_prepared_tool_batch(&prepared)` | validate and reuse the retained UUID, authorize, invoke the registered executor, and record a receipt | actual-result `ExecutionOutcome` |
 | `execute_tool(idempotency_id, name, arguments)` | authorize exact payload, invoke the builder-registered executor, `POST /execution-receipts` | actual-result `ExecutionOutcome` without executable authorization bytes |
 | `send_jsonrpc(method, params)` | `POST /mcp` — arbitrary JSON-RPC body | `serde_json::Value` |
 

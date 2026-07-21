@@ -94,14 +94,21 @@ in one decision request. The clone-shared executor receives the whole signed
 batch once only after approval; deny, review, expiry, cancellation, policy
 change, malformed input, or call-identity drift release no sibling.
 
+Create a `PreparedToolRequest` or `PreparedToolBatch` before the first network
+attempt and persist its serialized value when a decision may be retried. Its
+canonical UUID is allocated locally or explicitly restored, then reused by the
+prepared authorization and execution APIs. The SDK revalidates deserialized
+values before HTTP construction and never creates or replaces an identity in a
+network path. The invariant is public in
+[`contracts/stable-request-identity-v1.json`](contracts/stable-request-identity-v1.json).
+
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
 the receipt signature against the TLS leaf used on that same request.
 
 ```rust,no_run
-use clavenar_sdk::{ClavenarClient, ExecutionEffect};
+use clavenar_sdk::{ClavenarClient, ExecutionEffect, PreparedToolRequest};
 use serde_json::json;
-use uuid::Uuid;
 
 # async fn run(mtls_client: reqwest::Client, svid_key: p256::ecdsa::SigningKey)
 # -> Result<(), clavenar_sdk::ClavenarError> {
@@ -118,17 +125,20 @@ let client = ClavenarClient::builder("https://proxy:8443")?
         })
     })
     .build()?;
-let outcome = client.execute_tool(
-    Uuid::new_v4(),
+let prepared = PreparedToolRequest::new(
     "payments.transfer",
     json!({"amount": 100}),
-).await?;
+)?;
+// Persist `prepared` before authorization if the operation must survive a
+// process restart, then restore the exact serialized value.
+let outcome = client.execute_prepared_tool(&prepared).await?;
 assert_eq!(outcome.result, json!({"ok": true}));
 assert_eq!(outcome.receipt.stage, "execution.completed");
 # Ok(()) }
 ```
 
-An exact retry may reuse its UUID; changed bytes under the same UUID are a
+An exact decision retry uses the same prepared UUID and receives the retained
+decision without a second upstream effect; changed bytes under that UUID are a
 conflict. Automatic retries after an uncertain external effect, durable batch
 intent capture, other language SDKs, and migration of the legacy
 Proxy-executed default remain WP-06 scope.
