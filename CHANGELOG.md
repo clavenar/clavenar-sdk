@@ -9,6 +9,14 @@ at that version".
 
 ### Added
 
+- `DurableExecutionStore` makes pre-effect intent and post-effect completion
+  persistence mandatory for SDK-governed execution. The completion store
+  atomically enqueues the workload-signed receipt, and
+  `flush_execution_receipt_outbox` redelivers receipts without re-executing a
+  tool.
+- `idempotent_tool_executor` supplies capable tools with the retained
+  idempotency ID, exact signed payload, authorization ID, and stable executor
+  identity.
 - `PreparedToolRequest` and `PreparedToolBatch` allocate a stable UUID before
   network access, serialize for durable retention, and restore without
   replacing that identity. Prepared authorization and execution APIs reuse it
@@ -33,6 +41,10 @@ at that version".
 
 ### Security
 
+- Missing or unavailable durable intent storage fails closed before an
+  executor effect. An effect is never reported successful until its actual
+  result/effect ID and signed receipt are durably committed and the outbox
+  delivery is confirmed.
 - Prepared requests are revalidated before HTTP construction. Invalid restored
   values fail locally with zero network attempts, and no governed network path
   creates or replaces a request identity.

@@ -2,12 +2,12 @@
 //!
 //! Proxy authorizes an exact, canonical JSON-RPC payload without invoking the
 //! upstream. The SDK invokes its registered executor with those signed bytes,
-//! then signs and submits a terminal receipt with the private P-256 key for
-//! the same mTLS SVID. Whole-batch decisions share this path; durable intent,
-//! uncertain-effect recovery, automatic retry, and non-Rust SDK parity remain
-//! part of the later executor migration.
+//! then durably stores the actual effect and submits a terminal receipt from a
+//! retrying outbox with the private P-256 key for the same mTLS SVID.
+//! Whole-batch decisions share this path; uncertain-effect recovery, automatic
+//! execution retry, and non-Rust SDK parity remain later migration work.
 
-use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashSet, fmt, future::Future, ops::Deref, pin::Pin, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
@@ -21,10 +21,40 @@ use crate::{Auth, ClavenarClient, ClavenarError};
 
 type ToolExecutorFuture =
     Pin<Box<dyn Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static>>;
-type ToolExecutorCallback = dyn Fn(Value) -> ToolExecutorFuture + Send + Sync + 'static;
+type ToolExecutorCallback =
+    dyn Fn(ToolExecutionRequest) -> ToolExecutorFuture + Send + Sync + 'static;
+
+pub type DurableStoreFuture<T> =
+    Pin<Box<dyn Future<Output = Result<T, ClavenarError>> + Send + 'static>>;
+
+/// Application-provided durable persistence for SDK-governed effects.
+///
+/// `commit_effect_and_enqueue_receipt` must atomically store the completion and
+/// enqueue its exact receipt. Delivery failures remain pending until
+/// `mark_receipt_delivered` succeeds.
+pub trait DurableExecutionStore: fmt::Debug + Send + Sync + 'static {
+    fn commit_intent(&self, intent: ExecutionIntent) -> DurableStoreFuture<()>;
+
+    fn commit_effect_and_enqueue_receipt(
+        &self,
+        completion: ExecutionCompletion,
+    ) -> DurableStoreFuture<ReceiptOutboxEntry>;
+
+    fn pending_receipts(&self, limit: usize) -> DurableStoreFuture<Vec<ReceiptOutboxEntry>>;
+
+    fn mark_receipt_delivered(
+        &self,
+        outbox_id: String,
+        recorded: ReceiptRecorded,
+    ) -> DurableStoreFuture<()>;
+}
+
+const DEFAULT_EXECUTOR_ID: &str = "clavenar.registered-sdk-executor/default";
+const MAX_OUTBOX_FLUSH: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct RegisteredToolExecutor {
+    id: String,
     callback: Arc<ToolExecutorCallback>,
 }
 
@@ -35,12 +65,27 @@ impl RegisteredToolExecutor {
         Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
     {
         Self {
-            callback: Arc::new(move |payload| Box::pin(executor(payload))),
+            id: DEFAULT_EXECUTOR_ID.into(),
+            callback: Arc::new(move |request| Box::pin(executor(request.execution_payload))),
         }
     }
 
-    async fn execute(&self, payload: Value) -> Result<ExecutionEffect, ClavenarError> {
-        (self.callback)(payload).await
+    pub(crate) fn new_idempotent<F, Fut>(executor_id: String, executor: F) -> Self
+    where
+        F: Fn(ToolExecutionRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+    {
+        Self {
+            id: executor_id,
+            callback: Arc::new(move |request| Box::pin(executor(request))),
+        }
+    }
+
+    async fn execute(
+        &self,
+        request: ToolExecutionRequest,
+    ) -> Result<ExecutionEffect, ClavenarError> {
+        (self.callback)(request).await
     }
 }
 
@@ -66,6 +111,9 @@ pub const ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT: &str =
     include_str!("../contracts/atomic-tool-call-batch-v1.json");
 pub const STABLE_REQUEST_IDENTITY_CONTRACT: &str =
     include_str!("../contracts/stable-request-identity-v1.json");
+pub const DURABLE_EXECUTION_OUTBOX_CONTRACT: &str =
+    include_str!("../contracts/durable-execution-outbox-v1.json");
+pub const DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT: &str = "clavenar.sdk-durable-intent-outbox/v1";
 
 const MAX_BATCH_CALLS: usize = 128;
 
@@ -263,6 +311,60 @@ pub struct ExecutionReceipt {
     pub workload_signature: WorkloadSignature,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionIntent {
+    pub contract: String,
+    pub stage: String,
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub tenant: String,
+    pub workload_id: String,
+    pub workload_spiffe: String,
+    pub payload_sha256: String,
+    pub executor_id: String,
+    pub authorization: SignedAuthorization,
+}
+
+/// Exact input to an idempotency-capable registered tool executor.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolExecutionRequest {
+    pub idempotency_id: Uuid,
+    pub authorization_id: Uuid,
+    pub executor_id: String,
+    pub execution_payload: Value,
+}
+
+impl Deref for ToolExecutionRequest {
+    type Target = Value;
+
+    fn deref(&self) -> &Self::Target {
+        &self.execution_payload
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ExecutionCompletion {
+    pub contract: String,
+    pub stage: String,
+    pub authorization_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub executor_id: String,
+    pub actual_result: Value,
+    pub actual_result_sha256: String,
+    pub effect_id: String,
+    pub receipt: ExecutionReceipt,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ReceiptOutboxEntry {
+    pub outbox_id: String,
+    pub receipt: ExecutionReceipt,
+}
+
 #[derive(Clone, Debug, Serialize)]
 struct UnsignedExecutionReceipt<'a> {
     contract: &'a str,
@@ -375,9 +477,9 @@ impl ClavenarClient {
         name: &str,
         arguments: Value,
     ) -> Result<ExecutionOutcome, ClavenarError> {
-        let (executor, signing_key) = self.execution_dependencies()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
         let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
-        self.execute_authorization(executor, signing_key, authorization)
+        self.execute_authorization(executor, signing_key, store, authorization)
             .await
     }
 
@@ -404,9 +506,9 @@ impl ClavenarClient {
         idempotency_id: Uuid,
         calls: Vec<ModelToolCall>,
     ) -> Result<ExecutionOutcome, ClavenarError> {
-        let (executor, signing_key) = self.execution_dependencies()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
         let authorization = self.authorize_tool_batch(idempotency_id, calls).await?;
-        self.execute_authorization(executor, signing_key, authorization)
+        self.execute_authorization(executor, signing_key, store, authorization)
             .await
     }
 
@@ -419,6 +521,38 @@ impl ClavenarClient {
         prepared.validate()?;
         self.execute_tool_batch(prepared.idempotency_id, prepared.calls.clone())
             .await
+    }
+
+    /// Deliver pending workload-signed receipts without authorizing or
+    /// executing any tool. Each entry is attempted once per call and remains
+    /// pending unless Proxy confirms persistence and the store marks it
+    /// delivered.
+    pub async fn flush_execution_receipt_outbox(
+        &self,
+        limit: usize,
+    ) -> Result<usize, ClavenarError> {
+        if limit == 0 || limit > MAX_OUTBOX_FLUSH {
+            return Err(ClavenarError::InvalidConfig(format!(
+                "receipt outbox flush limit must contain 1..={MAX_OUTBOX_FLUSH} entries"
+            )));
+        }
+        let store = self.durable_execution_store.as_deref().ok_or_else(|| {
+            ClavenarError::InvalidConfig(
+                "durable_execution_store is required for receipt outbox delivery".into(),
+            )
+        })?;
+        let pending = store.pending_receipts(limit).await?;
+        if pending.len() > limit {
+            return Err(ClavenarError::InvalidConfig(
+                "durable execution store exceeded the requested outbox limit".into(),
+            ));
+        }
+        let mut delivered = 0;
+        for entry in pending {
+            self.deliver_outbox_entry(store, entry).await?;
+            delivered += 1;
+        }
+        Ok(delivered)
     }
 
     async fn authorize_payload(
@@ -453,35 +587,67 @@ impl ClavenarClient {
 
     fn execution_dependencies(
         &self,
-    ) -> Result<(&RegisteredToolExecutor, &SigningKey), ClavenarError> {
+    ) -> Result<
+        (
+            &RegisteredToolExecutor,
+            &SigningKey,
+            &dyn DurableExecutionStore,
+        ),
+        ClavenarError,
+    > {
         let executor = self.tool_executor.as_ref().ok_or_else(|| {
             ClavenarError::InvalidConfig(
                 "tool_executor is required for SDK-governed execution".into(),
             )
         })?;
-        let signing_key = self.execution_signing_key.as_ref().ok_or_else(|| {
+        validate_executor_id(&executor.id)?;
+        let signing_key = self.execution_signing_key.as_deref().ok_or_else(|| {
             ClavenarError::InvalidConfig(
                 "execution_signing_key is required for SDK-governed execution".into(),
             )
         })?;
-        Ok((executor, signing_key))
+        let store = self.durable_execution_store.as_deref().ok_or_else(|| {
+            ClavenarError::InvalidConfig(
+                "durable_execution_store is required for SDK-governed execution".into(),
+            )
+        })?;
+        Ok((executor, signing_key, store))
     }
 
     async fn execute_authorization(
         &self,
         executor: &RegisteredToolExecutor,
         signing_key: &SigningKey,
+        store: &dyn DurableExecutionStore,
         authorization: SignedAuthorization,
     ) -> Result<ExecutionOutcome, ClavenarError> {
+        let claims = &authorization.authorization;
+        let intent = ExecutionIntent {
+            contract: DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT.into(),
+            stage: "execution.intent".into(),
+            authorization_id: claims.authorization_id,
+            idempotency_id: claims.idempotency_id,
+            tenant: claims.tenant.clone(),
+            workload_id: claims.agent_id.clone(),
+            workload_spiffe: claims.agent_spiffe.clone(),
+            payload_sha256: claims.payload_sha256.clone(),
+            executor_id: executor.id.clone(),
+            authorization: authorization.clone(),
+        };
+        store.commit_intent(intent).await?;
         let effect = executor
-            .execute(authorization.authorization.execution_payload.clone())
+            .execute(ToolExecutionRequest {
+                idempotency_id: claims.idempotency_id,
+                authorization_id: claims.authorization_id,
+                executor_id: executor.id.clone(),
+                execution_payload: claims.execution_payload.clone(),
+            })
             .await?;
         if effect.effect_id.is_empty() || effect.effect_id.len() > 256 {
             return Err(ClavenarError::InvalidConfig(
                 "execution effect_id must contain 1..=256 characters".into(),
             ));
         }
-        let claims = &authorization.authorization;
         let result_sha256 = sha256(canonical_json_value(&effect.result).as_bytes());
         let unsigned = UnsignedExecutionReceipt {
             contract: EXECUTION_CONTRACT,
@@ -514,7 +680,7 @@ impl ClavenarClient {
             method: claims.method.clone(),
             payload_sha256: claims.payload_sha256.clone(),
             authorization: authorization.clone(),
-            result_sha256,
+            result_sha256: result_sha256.clone(),
             effect_id: effect.effect_id.clone(),
             workload_signature: WorkloadSignature {
                 algorithm: "ES256".into(),
@@ -522,12 +688,51 @@ impl ClavenarClient {
                 value: general_purpose::URL_SAFE_NO_PAD.encode(signature.to_bytes()),
             },
         };
-        let recorded = self.record_receipt(&receipt).await?;
+        let queued = store
+            .commit_effect_and_enqueue_receipt(ExecutionCompletion {
+                contract: DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT.into(),
+                stage: "execution.effect-recorded".into(),
+                authorization_id: claims.authorization_id,
+                idempotency_id: claims.idempotency_id,
+                executor_id: executor.id.clone(),
+                actual_result: effect.result.clone(),
+                actual_result_sha256: result_sha256,
+                effect_id: effect.effect_id.clone(),
+                receipt: receipt.clone(),
+            })
+            .await?;
+        if queued.receipt != receipt {
+            return Err(ClavenarError::InvalidConfig(
+                "durable execution store returned a different outbox receipt".into(),
+            ));
+        }
+        let recorded = self.deliver_outbox_entry(store, queued).await?;
         Ok(ExecutionOutcome {
             receipt: recorded,
             result: effect.result,
             effect_id: effect.effect_id,
         })
+    }
+
+    async fn deliver_outbox_entry(
+        &self,
+        store: &dyn DurableExecutionStore,
+        entry: ReceiptOutboxEntry,
+    ) -> Result<ReceiptRecorded, ClavenarError> {
+        validate_outbox_entry(&entry)?;
+        let recorded = self.record_receipt(&entry.receipt).await?;
+        if recorded.authorization_id != entry.receipt.authorization_id
+            || recorded.contract != EXECUTION_CONTRACT
+            || recorded.stage != "execution.completed"
+        {
+            return Err(ClavenarError::InvalidConfig(
+                "Proxy returned invalid receipt persistence metadata".into(),
+            ));
+        }
+        store
+            .mark_receipt_delivered(entry.outbox_id, recorded.clone())
+            .await?;
+        Ok(recorded)
     }
 
     async fn record_receipt(
@@ -592,6 +797,34 @@ fn validate_tool_name(name: &str) -> Result<(), ClavenarError> {
     if name.is_empty() || name.len() > 256 {
         return Err(ClavenarError::InvalidConfig(
             "tool name must contain 1..=256 characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_executor_id(executor_id: &str) -> Result<(), ClavenarError> {
+    if executor_id.is_empty()
+        || executor_id.len() > 256
+        || !executor_id
+            .chars()
+            .all(|character| character.is_ascii_graphic())
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "executor identity must contain 1..=256 visible ASCII characters".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_outbox_entry(entry: &ReceiptOutboxEntry) -> Result<(), ClavenarError> {
+    if entry.outbox_id.is_empty()
+        || entry.outbox_id.len() > 256
+        || entry.receipt.contract != EXECUTION_CONTRACT
+        || entry.receipt.stage != "execution.completed"
+        || entry.receipt.workload_signature.algorithm != "ES256"
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "durable execution store returned an invalid receipt outbox entry".into(),
         ));
     }
     Ok(())
@@ -815,6 +1048,22 @@ mod tests {
             0
         );
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 7);
+    }
+
+    #[test]
+    fn durable_execution_outbox_contract_is_embedded_and_strict() {
+        let contract: Value = serde_json::from_str(DURABLE_EXECUTION_OUTBOX_CONTRACT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.5");
+        assert_eq!(contract["contract"], DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT);
+        assert_eq!(
+            contract["failClosed"]["durableStoreRequiredBeforeNetwork"],
+            true
+        );
+        assert_eq!(contract["intent"]["committedBeforeExecutor"], true);
+        assert_eq!(contract["completion"]["atomicStoreAndEnqueue"], true);
+        assert_eq!(contract["outbox"]["toolReexecutionAllowed"], false);
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 6);
     }
 
     #[test]

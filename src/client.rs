@@ -18,9 +18,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::ClavenarError;
-use crate::ExecutionEffect;
 use crate::execution::RegisteredToolExecutor;
 use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
+use crate::{DurableExecutionStore, ExecutionEffect, ToolExecutionRequest};
 
 /// Authentication mode for the proxy.
 ///
@@ -50,6 +50,7 @@ pub struct ClavenarClient {
     next_id: Arc<AtomicU64>,
     pub(crate) execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
     pub(crate) tool_executor: Option<RegisteredToolExecutor>,
+    pub(crate) durable_execution_store: Option<Arc<dyn DurableExecutionStore>>,
 }
 
 /// Two-step builder: validate the URL once, then attach optional
@@ -62,6 +63,7 @@ pub struct ClavenarClientBuilder {
     http: Option<Arc<dyn HttpProvider>>,
     execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
     tool_executor: Option<RegisteredToolExecutor>,
+    durable_execution_store: Option<Arc<dyn DurableExecutionStore>>,
 }
 
 impl ClavenarClient {
@@ -78,6 +80,7 @@ impl ClavenarClient {
             http: None,
             execution_signing_key: None,
             tool_executor: None,
+            durable_execution_store: None,
         })
     }
 
@@ -190,6 +193,35 @@ impl ClavenarClientBuilder {
         self
     }
 
+    /// Register an executor that receives the stable idempotency ID alongside
+    /// the exact authorized payload. `executor_id` is committed in durable
+    /// intent before invocation.
+    pub fn idempotent_tool_executor<F, Fut>(
+        mut self,
+        executor_id: impl Into<String>,
+        executor: F,
+    ) -> Self
+    where
+        F: Fn(ToolExecutionRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+    {
+        self.tool_executor = Some(RegisteredToolExecutor::new_idempotent(
+            executor_id.into(),
+            executor,
+        ));
+        self
+    }
+
+    /// Attach the application-owned durable intent, completion, and receipt
+    /// outbox store required for SDK-governed execution.
+    pub fn durable_execution_store<S>(mut self, store: S) -> Self
+    where
+        S: DurableExecutionStore,
+    {
+        self.durable_execution_store = Some(Arc::new(store));
+        self
+    }
+
     /// Construct the client. Builds a default `reqwest::Client` if
     /// neither `http_client(...)` nor `http_provider(...)` was called.
     pub fn build(self) -> Result<ClavenarClient, ClavenarError> {
@@ -204,6 +236,7 @@ impl ClavenarClientBuilder {
             next_id: Arc::new(AtomicU64::new(1)),
             execution_signing_key: self.execution_signing_key,
             tool_executor: self.tool_executor,
+            durable_execution_store: self.durable_execution_store,
         })
     }
 }

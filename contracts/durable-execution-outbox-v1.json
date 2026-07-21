@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.5",
+  "contract": "clavenar.sdk-durable-intent-outbox/v1",
+  "executionEvidenceContract": "clavenar.execution/v1",
+  "failClosed": {
+    "durableStoreRequiredBeforeNetwork": true,
+    "unavailableIntentStoreExecutorEffects": 0,
+    "unpersistedEffectReportsSuccess": false
+  },
+  "intent": {
+    "committedBeforeExecutor": true,
+    "fields": [
+      "signed-authorization",
+      "authorization-id",
+      "tenant",
+      "workload-id",
+      "workload-spiffe",
+      "exact-payload-sha256",
+      "idempotency-id",
+      "executor-id"
+    ]
+  },
+  "executor": {
+    "idempotencyCapableContext": true,
+    "exactAuthorizedPayload": true,
+    "invocationsPerAuthorizedEffect": 1
+  },
+  "completion": {
+    "atomicStoreAndEnqueue": true,
+    "fields": [
+      "actual-result",
+      "actual-result-sha256",
+      "effect-id",
+      "workload-signed-receipt"
+    ]
+  },
+  "outbox": {
+    "receiptDeliveryOnly": true,
+    "boundedFlush": true,
+    "failedDeliveryRemainsPending": true,
+    "markDeliveredAfterProxyPersistence": true,
+    "toolReexecutionAllowed": false
+  },
+  "retainedFeatures": [
+    "WP-06.6",
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}

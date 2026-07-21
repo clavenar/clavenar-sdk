@@ -32,6 +32,7 @@ conflict, typed-error lift), see [`SEQUENCES.md`](./SEQUENCES.md).
 | `authorize_tool(idempotency_id, name, arguments)` | `POST /mcp` with the `clavenar.decision/v1` selector; side-effect-free and no server-execution fallback | `SignedAuthorization` |
 | `execute_prepared_tool(&prepared)` / `execute_prepared_tool_batch(&prepared)` | validate and reuse the retained UUID, authorize, invoke the registered executor, and record a receipt | actual-result `ExecutionOutcome` |
 | `execute_tool(idempotency_id, name, arguments)` | authorize exact payload, invoke the builder-registered executor, `POST /execution-receipts` | actual-result `ExecutionOutcome` without executable authorization bytes |
+| `flush_execution_receipt_outbox(limit)` | load bounded pending signed receipts from `DurableExecutionStore`, `POST /execution-receipts`, and mark only confirmed entries delivered; performs no tool authorization or execution | delivered receipt count |
 | `send_jsonrpc(method, params)` | `POST /mcp` — arbitrary JSON-RPC body | `serde_json::Value` |
 
 Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →

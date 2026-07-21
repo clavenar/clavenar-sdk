@@ -120,6 +120,7 @@ sequenceDiagram
     participant Caller
     participant SDK as ClavenarClient::execute_tool
     participant Proxy
+    participant Store as durable intent/outbox store
     participant Executor as registered tool executor
     participant Ledger
 
@@ -127,23 +128,32 @@ sequenceDiagram
     SDK-->>Caller: serializable request + locally allocated UUID
     Caller->>SDK: execute_prepared_tool(&prepared)
     SDK-->>SDK: validate retained identity and payload before HTTP construction
-    SDK-->>SDK: require registered executor + workload signing key
+    SDK-->>SDK: require executor + signing key + durable store
     SDK->>Proxy: /mcp + side-effect-free clavenar.decision/v1 selector
     Note over Proxy: decision selector permits 0 upstream effects
     Proxy-->>SDK: Identity-signed exact execution payload
-    SDK->>Executor: invoke(exact authorized payload)
+    SDK->>Store: commit signed authorization + tenant/workload + digest + IDs
+    Store-->>SDK: durable intent committed
+    SDK->>Executor: invoke(exact authorized payload + idempotency ID)
     Executor-->>SDK: actual result + effect ID
     SDK-->>SDK: hash actual result; sign terminal receipt
-    SDK->>Proxy: POST /execution-receipts
+    SDK->>Store: atomically persist actual result/effect + enqueue receipt
+    Store-->>SDK: durable outbox entry
+    SDK->>Proxy: POST /execution-receipts from outbox
     Proxy->>Ledger: commit execution.completed
     Ledger-->>Proxy: recorded
     Proxy-->>SDK: non-executable receipt metadata
+    SDK->>Store: mark receipt delivered
     SDK-->>Caller: actual result + effect ID + receipt metadata
 ```
 
-Missing configuration fails before the authorization request. A deny or invalid
+Missing executor, signing-key, or durable-store configuration fails before the
+authorization request. Unavailable intent persistence fails before the
+executor. A deny or invalid
 authorization never invokes the executor. Receipt failure returns an error and
-does not report governed execution success. The decision selector is versioned
+leaves the signed entry pending; bounded outbox redelivery never authorizes or
+executes a tool. Governed execution success is not reported until the actual
+result/effect and receipt are durably committed and delivery is confirmed. The decision selector is versioned
 independently from `clavenar.execution/v1` evidence. An absent selector means
 the explicit legacy server-execution `/mcp` contract; the SDK governed path
 never retries by falling back to that mode.

@@ -79,6 +79,12 @@ effect. The SDK passes that signed payload to your executor, signs a
 terminal receipt, and waits for the receipt's synchronous Ledger commit. The
 executor is registered when the client is built and shared by client clones;
 the governed call never returns an executable payload to a host tool loop.
+The client also requires an application-owned `DurableExecutionStore`. It
+commits the exact signed authorization and workload/tenant/payload/executor
+identity before invoking the executor, then atomically stores the actual
+result/effect and enqueues the workload-signed receipt. Missing or unavailable
+durability fails closed. Receipt redelivery uses
+`flush_execution_receipt_outbox` and cannot execute a tool.
 The exact invariant set is
 [`contracts/sdk-execution-authority-v1.json`](contracts/sdk-execution-authority-v1.json).
 The selector/server-execution separation is fixed by
@@ -101,6 +107,8 @@ prepared authorization and execution APIs. The SDK revalidates deserialized
 values before HTTP construction and never creates or replaces an identity in a
 network path. The invariant is public in
 [`contracts/stable-request-identity-v1.json`](contracts/stable-request-identity-v1.json).
+The durable intent/completion/outbox boundary is fixed by
+[`contracts/durable-execution-outbox-v1.json`](contracts/durable-execution-outbox-v1.json).
 
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
@@ -110,15 +118,19 @@ the receipt signature against the TLS leaf used on that same request.
 use clavenar_sdk::{ClavenarClient, ExecutionEffect, PreparedToolRequest};
 use serde_json::json;
 
-# async fn run(mtls_client: reqwest::Client, svid_key: p256::ecdsa::SigningKey)
-# -> Result<(), clavenar_sdk::ClavenarError> {
+# async fn run<S>(mtls_client: reqwest::Client, svid_key: p256::ecdsa::SigningKey,
+# durable_store: S)
+# -> Result<(), clavenar_sdk::ClavenarError>
+# where S: clavenar_sdk::DurableExecutionStore
+# {
 let client = ClavenarClient::builder("https://proxy:8443")?
     .http_client(mtls_client)
     .execution_signing_key(svid_key)
-    .tool_executor(|signed_jsonrpc| async move {
-        // Invoke the tool using exactly signed_jsonrpc; this registered
-        // callback is the sole side-effecting step in the governed path.
-        let _ = signed_jsonrpc;
+    .durable_execution_store(durable_store)
+    .idempotent_tool_executor("payments-provider/v1", |request| async move {
+        // Forward request.idempotency_id when the provider supports it and
+        // invoke only request.execution_payload.
+        let _ = request.idempotency_id;
         Ok(ExecutionEffect {
             result: json!({"ok": true}),
             effect_id: "provider-operation-123".into(),
@@ -139,8 +151,9 @@ assert_eq!(outcome.receipt.stage, "execution.completed");
 
 An exact decision retry uses the same prepared UUID and receives the retained
 decision without a second upstream effect; changed bytes under that UUID are a
-conflict. Automatic retries after an uncertain external effect, durable batch
-intent capture, other language SDKs, and migration of the legacy
+conflict. Receipt delivery may be resumed from the durable outbox without
+re-authorizing or re-executing. Automatic execution retries after an uncertain
+external effect, other language SDKs, and migration of the legacy
 Proxy-executed default remain WP-06 scope.
 
 ## Audit reconstruction

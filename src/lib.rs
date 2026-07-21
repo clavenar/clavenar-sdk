@@ -69,11 +69,14 @@ pub use error::ClavenarError;
 pub use execution::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT,
     ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME, Authorization, DECISION_CONTRACT,
-    DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
-    ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature, ModelToolCall,
-    PolicyBundleProvenance, PreparedToolBatch, PreparedToolRequest, ReceiptRecorded,
-    SDK_EXECUTION_AUTHORITY_CONTRACT, SIDE_EFFECT_FREE_DECISION_CONTRACT,
-    STABLE_REQUEST_IDENTITY_CONTRACT, SignedAuthorization, WorkloadSignature,
+    DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_CONTRACT,
+    DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT, DurableExecutionStore, DurableStoreFuture,
+    EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionCompletion, ExecutionEffect,
+    ExecutionIntent, ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature,
+    ModelToolCall, PolicyBundleProvenance, PreparedToolBatch, PreparedToolRequest,
+    ReceiptOutboxEntry, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT,
+    SIDE_EFFECT_FREE_DECISION_CONTRACT, STABLE_REQUEST_IDENTITY_CONTRACT, SignedAuthorization,
+    ToolExecutionRequest, WorkloadSignature,
 };
 pub use hil::{
     ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,

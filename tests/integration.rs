@@ -17,8 +17,8 @@
 
 use std::net::SocketAddr;
 use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use axum::{
@@ -35,9 +35,10 @@ use base64::{Engine as _, engine::general_purpose};
 use clavenar_sdk::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME,
     AuditFilterParams, Auth, ClavenarClient, ClavenarError, DECISION_CONTRACT,
-    DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
-    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient, ModelToolCall, PreparedToolBatch,
-    PreparedToolRequest,
+    DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT, DurableExecutionStore,
+    DurableStoreFuture, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionCompletion,
+    ExecutionEffect, ExecutionIntent, ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
+    ModelToolCall, PreparedToolBatch, PreparedToolRequest, ReceiptOutboxEntry, ReceiptRecorded,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -73,6 +74,103 @@ async fn spawn(router: Router) -> (String, oneshot::Sender<()>) {
 struct ExecutionStub {
     authorization: Value,
     verifying_key: VerifyingKey,
+}
+
+#[derive(Debug, Default)]
+struct MemoryExecutionState {
+    intents: Vec<ExecutionIntent>,
+    completions: Vec<ExecutionCompletion>,
+    pending: Vec<ReceiptOutboxEntry>,
+    delivered: Vec<(String, ReceiptRecorded)>,
+    ordering: Vec<&'static str>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct MemoryExecutionStore {
+    state: Arc<Mutex<MemoryExecutionState>>,
+    fail_intent: Arc<AtomicBool>,
+}
+
+impl MemoryExecutionStore {
+    fn fail_intent(&self) {
+        self.fail_intent.store(true, Ordering::SeqCst);
+    }
+
+    fn record_effect_order(&self) {
+        self.state.lock().unwrap().ordering.push("effect");
+    }
+}
+
+impl DurableExecutionStore for MemoryExecutionStore {
+    fn commit_intent(&self, intent: ExecutionIntent) -> DurableStoreFuture<()> {
+        let store = self.clone();
+        Box::pin(async move {
+            if store.fail_intent.load(Ordering::SeqCst) {
+                return Err(ClavenarError::InvalidConfig(
+                    "durable intent store unavailable".into(),
+                ));
+            }
+            let mut state = store.state.lock().unwrap();
+            state.ordering.push("intent");
+            state.intents.push(intent);
+            Ok(())
+        })
+    }
+
+    fn commit_effect_and_enqueue_receipt(
+        &self,
+        completion: ExecutionCompletion,
+    ) -> DurableStoreFuture<ReceiptOutboxEntry> {
+        let store = self.clone();
+        Box::pin(async move {
+            let entry = ReceiptOutboxEntry {
+                outbox_id: format!("receipt-{}", completion.authorization_id),
+                receipt: completion.receipt.clone(),
+            };
+            let mut state = store.state.lock().unwrap();
+            state.ordering.push("completion");
+            state.completions.push(completion);
+            state.pending.push(entry.clone());
+            Ok(entry)
+        })
+    }
+
+    fn pending_receipts(&self, limit: usize) -> DurableStoreFuture<Vec<ReceiptOutboxEntry>> {
+        let store = self.clone();
+        Box::pin(async move {
+            Ok(store
+                .state
+                .lock()
+                .unwrap()
+                .pending
+                .iter()
+                .take(limit)
+                .cloned()
+                .collect())
+        })
+    }
+
+    fn mark_receipt_delivered(
+        &self,
+        outbox_id: String,
+        recorded: ReceiptRecorded,
+    ) -> DurableStoreFuture<()> {
+        let store = self.clone();
+        Box::pin(async move {
+            let mut state = store.state.lock().unwrap();
+            let index = state
+                .pending
+                .iter()
+                .position(|entry| entry.outbox_id == outbox_id)
+                .ok_or_else(|| {
+                    ClavenarError::InvalidConfig("receipt outbox entry is not pending".into())
+                })?;
+            state.pending.remove(index);
+            state.ordering.push("delivered");
+            state.delivered.push((outbox_id, recorded));
+            Ok(())
+        })
+    }
 }
 
 fn model_batch() -> Vec<ModelToolCall> {
@@ -295,13 +393,23 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
         )
         .with_state(state);
     let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
+    let executor_store = store.clone();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(signing_key)
-        .tool_executor(move |payload| {
+        .durable_execution_store(store.clone())
+        .idempotent_tool_executor("payments-provider/v1", move |payload| {
             let effects = Arc::clone(&executor_effects);
+            let store = executor_store.clone();
             async move {
+                assert_eq!(
+                    payload.idempotency_id,
+                    Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap()
+                );
+                assert_eq!(payload.executor_id, "payments-provider/v1");
                 assert_eq!(payload["params"]["arguments"]["amount"], 100);
+                store.record_effect_order();
                 effects.fetch_add(1, Ordering::SeqCst);
                 Ok(ExecutionEffect {
                     result: json!({"ok": true, "source": "registered-executor"}),
@@ -330,6 +438,27 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
     assert_eq!(outcome.effect_id, "provider-operation-123");
     assert_eq!(outcome.receipt.stage, "execution.completed");
     assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let state = store.state.lock().unwrap();
+    assert_eq!(
+        state.ordering,
+        ["intent", "effect", "completion", "delivered"]
+    );
+    assert_eq!(state.intents.len(), 1);
+    assert_eq!(state.completions.len(), 1);
+    assert_eq!(state.pending.len(), 0);
+    let intent = &state.intents[0];
+    assert_eq!(intent.contract, DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT);
+    assert_eq!(intent.tenant, "acme");
+    assert_eq!(intent.workload_id, "payments-agent");
+    assert_eq!(intent.executor_id, "payments-provider/v1");
+    assert_eq!(
+        intent.payload_sha256,
+        intent.authorization.authorization.payload_sha256
+    );
+    let completion = &state.completions[0];
+    assert_eq!(completion.actual_result, outcome.result);
+    assert_eq!(completion.effect_id, outcome.effect_id);
+    assert_eq!(completion.receipt.workload_signature.algorithm, "ES256");
     drop(shutdown);
 }
 
@@ -385,9 +514,11 @@ async fn atomic_batch_is_fully_authorized_before_one_executor_invocation() {
             }),
         );
     let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(signing_key)
+        .durable_execution_store(store)
         .tool_executor(move |payload| {
             let effects = Arc::clone(&executor_effects);
             async move {
@@ -445,9 +576,11 @@ async fn modified_atomic_batch_preserves_all_sibling_identity_before_execution()
             }),
         );
     let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store)
         .tool_executor(move |payload| {
             let effects = Arc::clone(&executor_effects);
             async move {
@@ -498,9 +631,11 @@ async fn nonapproval_and_invalid_batches_release_zero_siblings() {
     let (url, shutdown) = spawn(app).await;
     let effects = Arc::new(AtomicUsize::new(0));
     let executor_effects = Arc::clone(&effects);
+    let store = MemoryExecutionStore::default();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store)
         .tool_executor(move |_| {
             let effects = Arc::clone(&executor_effects);
             async move {
@@ -566,14 +701,110 @@ async fn governed_execution_requires_registered_executor_before_network() {
 }
 
 #[tokio::test]
+async fn governed_execution_requires_durable_store_before_network() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .tool_executor(|_| async {
+            Ok(ExecutionEffect {
+                result: Value::Null,
+                effect_id: "unexpected".into(),
+            })
+        })
+        .build()
+        .unwrap();
+    let error = client
+        .execute_tool(Uuid::new_v4(), "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClavenarError::InvalidConfig(message) if message.contains("durable_execution_store"))
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn unavailable_durable_intent_store_releases_zero_executor_effects() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let authorization = fixture["authorization"].clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let authorization = authorization.clone();
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                (StatusCode::OK, Json(authorization))
+            }
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let store = MemoryExecutionStore::default();
+    store.fail_intent();
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store)
+        .tool_executor(move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: Value::Null,
+                    effect_id: "unexpected".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    let error = client
+        .execute_tool(
+            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+            "payments.transfer",
+            json!({"amount": 100}),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClavenarError::InvalidConfig(message) if message.contains("unavailable"))
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 1);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
 async fn denied_authorization_never_invokes_registered_executor() {
     let effects = Arc::new(AtomicUsize::new(0));
     let executor_effects = Arc::clone(&effects);
     let app = Router::new().route("/mcp", post(|| async { (StatusCode::FORBIDDEN, "denied") }));
     let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store)
         .tool_executor(move |_| {
             let effects = Arc::clone(&executor_effects);
             async move {
@@ -597,13 +828,15 @@ async fn denied_authorization_never_invokes_registered_executor() {
 }
 
 #[tokio::test]
-async fn receipt_failure_does_not_report_governed_execution_success() {
+async fn receipt_outbox_redelivery_never_reexecutes_the_tool() {
     let fixture: Value = serde_json::from_str(include_str!(
         "../contracts/execution-receipt-v1.fixture.json"
     ))
     .unwrap();
     let effects = Arc::new(AtomicUsize::new(0));
     let executor_effects = Arc::clone(&effects);
+    let receipt_requests = Arc::new(AtomicUsize::new(0));
+    let server_receipt_requests = Arc::clone(&receipt_requests);
     let app = Router::new()
         .route(
             "/mcp",
@@ -614,12 +847,33 @@ async fn receipt_failure_does_not_report_governed_execution_success() {
         )
         .route(
             "/execution-receipts",
-            post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "receipt unavailable") }),
+            post(move |Json(receipt): Json<Value>| {
+                let requests = Arc::clone(&server_receipt_requests);
+                async move {
+                    if requests.fetch_add(1, Ordering::SeqCst) == 0 {
+                        return (StatusCode::SERVICE_UNAVAILABLE, "receipt unavailable")
+                            .into_response();
+                    }
+                    (
+                        StatusCode::CREATED,
+                        Json(json!({
+                            "status": "recorded",
+                            "contract": EXECUTION_CONTRACT,
+                            "stage": "execution.completed",
+                            "authorization_id": receipt["authorization_id"],
+                            "receipt_sha256": "sha256:redelivered"
+                        })),
+                    )
+                        .into_response()
+                }
+            }),
         );
     let (url, shutdown) = spawn(app).await;
+    let store = MemoryExecutionStore::default();
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store.clone())
         .tool_executor(move |_| {
             let effects = Arc::clone(&executor_effects);
             async move {
@@ -644,6 +898,19 @@ async fn receipt_failure_does_not_report_governed_execution_success() {
         matches!(error, ClavenarError::Server { status, .. } if status == StatusCode::SERVICE_UNAVAILABLE)
     );
     assert_eq!(effects.load(Ordering::SeqCst), 1);
+    {
+        let state = store.state.lock().unwrap();
+        assert_eq!(state.completions.len(), 1);
+        assert_eq!(state.pending.len(), 1);
+        assert_eq!(state.delivered.len(), 0);
+    }
+    assert_eq!(client.flush_execution_receipt_outbox(16).await.unwrap(), 1);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(receipt_requests.load(Ordering::SeqCst), 2);
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.completions.len(), 1);
+    assert_eq!(state.pending.len(), 0);
+    assert_eq!(state.delivered.len(), 1);
     drop(shutdown);
 }
 
