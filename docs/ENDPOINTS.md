@@ -66,7 +66,7 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 | `behavioral_baseline(agent_id, baseline_days, recent_days)` / `behavioral_baseline_for_tenant(..., tenant)` | `GET /analysis/agent-behavioral-baseline?agent_id=&baseline_days=&recent_days=[&tenant=]` | `BehavioralBaseline` |
 | `silent_agents(since_hours)` / `silent_agents_for_tenant(..., tenant)` | `GET /analysis/silent-agents?since_hours=[&tenant=]` | `SilentAgentsReport` |
 | `fleet_behavioral_diff(baseline_days, recent_days, limit)` / `fleet_behavioral_diff_for_tenant(..., tenant)` | `GET /analysis/fleet-behavioral-diff?baseline_days=&recent_days=&limit=[&tenant=]` | `FleetBehavioralDiff` |
-| `model_upgrade_canary(cutover, window_hours)` / `model_upgrade_canary_for_tenant(..., tenant)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=][&tenant=]` | `ModelUpgradeCanary` |
+| `model_upgrade_canary_for_tenant(cutover, window_hours, tenant)` / `model_upgrade_canary_scoped(..., scope)` | `GET /analysis/model-upgrade-canary?window_hours=[&cutover=][&tenant=][&demo_session_token=]` | `ModelUpgradeCanary` |
 | `hunt(params)` | `GET /audit/hunt?limit=[&method=&signal=&authorized=&from=&to=&tenant=&demo_session_token=]` | `HuntResult` |
 | `finops_spend(window, tenant, limit)` | `GET /finops/spend?limit=[&window=&tenant=]` | `SpendRollup` (`tenant` `None` → deployment-wide rollup) |
 | `compliance_evidence(from, to)` | `POST /compliance/evidence?from=&to=` | `ComplianceRegister` |

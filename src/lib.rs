@@ -93,8 +93,9 @@ pub use ledger::{
     ControlEvidence, CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportOutcome, ExportRecord,
     FleetBehavioralDiff, FleetBehavioralDiffScope, FleetDiffRow, HuntAgentRollup, HuntParams,
     HuntResult, LedgerClient, LedgerEntry, LifecycleRow, LogEntry, LogReceipt, ModelUpgradeCanary,
-    RegisterWindow, RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SilentAgent,
-    SilentAgentsReport, SpendAgentRow, SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
+    ModelUpgradeCanaryScope, RegisterWindow, RegulatoryExportOptions, ReplayCorpus,
+    ReplayCorpusParams, SilentAgent, SilentAgentsReport, SpendAgentRow, SpendRollup, ToolShare,
+    ToolUsage, VerifyResult, WindowDiff,
 };
 pub use pack::{
     PACK_AUDIENCE, PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,
