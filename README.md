@@ -91,8 +91,9 @@ The selector/server-execution separation is fixed by
 [`contracts/side-effect-free-decision-v1.json`](contracts/side-effect-free-decision-v1.json):
 ordinary `/mcp` remains the legacy server-executed compatibility path only when
 decision headers are absent. Lite rejects decision selectors before upstream
-access until its shared durability contract is available; the SDK never falls
-back to unselected `/mcp` after a decision request.
+access because it does not issue SDK authorizations; it does expose the shared
+pending lifecycle contract for its durable server-execution review queue. The
+SDK never falls back to unselected `/mcp` after a decision request.
 
 Model siblings use `execute_tool_batch`. It commits the complete ordered batch
 under [`clavenar.atomic-tool-call-batch/v1`](contracts/atomic-tool-call-batch-v1.json)
@@ -109,6 +110,16 @@ network path. The invariant is public in
 [`contracts/stable-request-identity-v1.json`](contracts/stable-request-identity-v1.json).
 The durable intent/completion/outbox boundary is fixed by
 [`contracts/durable-execution-outbox-v1.json`](contracts/durable-execution-outbox-v1.json).
+Human review is resumable through
+[`contracts/pending-authorization-v1.json`](contracts/pending-authorization-v1.json).
+`begin_prepared_tool_execution` returns a serializable `PendingAuthorization`
+without invoking the executor. Persist it beside the exact prepared request,
+then call `resume_prepared_tool_execution`; another pending response retains
+the same handle, while approval returns an identity-signed authorization and
+atomically claims it before execution. A model-generated replacement call is
+never accepted as a resume. Stores that support this path must implement
+`supports_single_use_authorization` and `claim_intent_once`; the default fails
+closed before an executor.
 
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
@@ -152,7 +163,9 @@ assert_eq!(outcome.receipt.stage, "execution.completed");
 An exact decision retry uses the same prepared UUID and receives the retained
 decision without a second upstream effect; changed bytes under that UUID are a
 conflict. Receipt delivery may be resumed from the durable outbox without
-re-authorizing or re-executing. Automatic execution retries after an uncertain
+re-authorizing or re-executing. Pending review polling likewise releases zero
+effects, and concurrent approval resumes produce one durable claim and at most
+one executor invocation. Automatic execution retries after an uncertain
 external effect, other language SDKs, and migration of the legacy
 Proxy-executed default remain WP-06 scope.
 

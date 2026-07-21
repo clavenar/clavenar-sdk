@@ -30,6 +30,8 @@ conflict, typed-error lift), see [`SEQUENCES.md`](./SEQUENCES.md).
 | `call_tool(name, arguments)` | `POST /mcp` — JSON-RPC `tools/call` body | `serde_json::Value` |
 | `authorize_prepared_tool(&prepared)` / `authorize_prepared_tool_batch(&prepared)` | validate a serializable, pre-network stable UUID and send `POST /mcp` with the side-effect-free decision selector | `SignedAuthorization` |
 | `authorize_tool(idempotency_id, name, arguments)` | `POST /mcp` with the `clavenar.decision/v1` selector; side-effect-free and no server-execution fallback | `SignedAuthorization` |
+| `begin_prepared_tool_execution(&prepared)` / `begin_prepared_tool_batch_execution(&prepared)` | `POST /mcp`; return a serializable exact pending handle on `202` or execute a direct authorization | `ResumableExecutionOutcome` |
+| `resume_prepared_tool_execution(&prepared, &pending)` / `resume_prepared_tool_batch_execution(&prepared, &pending)` | poll by replaying the retained prepared request with its exact pending ID/digest; approval is atomically claimed before execution | `ResumableExecutionOutcome` |
 | `execute_prepared_tool(&prepared)` / `execute_prepared_tool_batch(&prepared)` | validate and reuse the retained UUID, authorize, invoke the registered executor, and record a receipt | actual-result `ExecutionOutcome` |
 | `execute_tool(idempotency_id, name, arguments)` | authorize exact payload, invoke the builder-registered executor, `POST /execution-receipts` | actual-result `ExecutionOutcome` without executable authorization bytes |
 | `flush_execution_receipt_outbox(limit)` | load bounded pending signed receipts from `DurableExecutionStore`, `POST /execution-receipts`, and mark only confirmed entries delivered; performs no tool authorization or execution | delivered receipt count |
@@ -39,6 +41,13 @@ Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →
 `Veto` via `parse_veto` (structured fields or `raw` verbatim), `401` →
 `Unauthorized`, `400` → `BadRequest`, else `Server`. Sends
 `Authorization: Bearer` when built with `Auth::Bearer`.
+
+The resumable methods additionally decode `202` as
+`PendingAuthorization`. They validate the contract, UUIDs, canonical payload
+digest, TTL, and poll interval before returning it. Resume requires a
+`DurableExecutionStore` whose atomic `claim_intent_once` implementation opts in
+through `supports_single_use_authorization`; repeated or concurrent claims
+fail before the registered executor.
 
 ---
 

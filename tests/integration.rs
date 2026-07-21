@@ -34,11 +34,13 @@ use tokio::sync::oneshot;
 use base64::{Engine as _, engine::general_purpose};
 use clavenar_sdk::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME,
-    AuditFilterParams, Auth, ClavenarClient, ClavenarError, DECISION_CONTRACT,
+    AuditFilterParams, Auth, AuthorizationClaim, ClavenarClient, ClavenarError, DECISION_CONTRACT,
     DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT, DurableExecutionStore,
     DurableStoreFuture, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionCompletion,
     ExecutionEffect, ExecutionIntent, ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
-    ModelToolCall, PreparedToolBatch, PreparedToolRequest, ReceiptOutboxEntry, ReceiptRecorded,
+    ModelToolCall, PENDING_AUTHORIZATION_CONTRACT, PENDING_ID_HEADER,
+    PENDING_PAYLOAD_SHA256_HEADER, PendingAuthorization, PreparedToolBatch, PreparedToolRequest,
+    ReceiptOutboxEntry, ReceiptRecorded, ResumableExecutionOutcome,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -46,7 +48,7 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use axum::extract::Query;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// One-shot fixture: spawn `router` on a fresh port; return the URL
 /// (e.g. `http://127.0.0.1:54321`) plus a sender that drops the
@@ -83,6 +85,7 @@ struct MemoryExecutionState {
     pending: Vec<ReceiptOutboxEntry>,
     delivered: Vec<(String, ReceiptRecorded)>,
     ordering: Vec<&'static str>,
+    claimed_authorizations: HashSet<Uuid>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -114,6 +117,28 @@ impl DurableExecutionStore for MemoryExecutionStore {
             state.ordering.push("intent");
             state.intents.push(intent);
             Ok(())
+        })
+    }
+
+    fn supports_single_use_authorization(&self) -> bool {
+        true
+    }
+
+    fn claim_intent_once(&self, intent: ExecutionIntent) -> DurableStoreFuture<AuthorizationClaim> {
+        let store = self.clone();
+        Box::pin(async move {
+            if store.fail_intent.load(Ordering::SeqCst) {
+                return Err(ClavenarError::InvalidConfig(
+                    "durable intent store unavailable".into(),
+                ));
+            }
+            let mut state = store.state.lock().unwrap();
+            if !state.claimed_authorizations.insert(intent.authorization_id) {
+                return Ok(AuthorizationClaim::AlreadyClaimed);
+            }
+            state.ordering.push("intent");
+            state.intents.push(intent);
+            Ok(AuthorizationClaim::Claimed)
         })
     }
 
@@ -308,6 +333,170 @@ async fn invalid_restored_prepared_requests_fail_before_network() {
             .is_err()
     );
     assert_eq!(requests.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn pending_poll_resume_consumes_exact_authorization_once() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let authorization = fixture["authorization"].clone();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let pending_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+    let correlation_id = Uuid::parse_str(
+        authorization["authorization"]["correlation_id"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(move |headers: HeaderMap, Json(body): Json<Value>| {
+                let authorization = authorization.clone();
+                let requests = Arc::clone(&server_requests);
+                async move {
+                    let index = requests.fetch_add(1, Ordering::SeqCst);
+                    let payload_sha256 = format!(
+                        "sha256:{}",
+                        hex::encode(Sha256::digest(canonical_json_value(&body).as_bytes()))
+                    );
+                    assert_eq!(body["id"], "cfcc8767-4c73-41cc-8ece-b855863924c4");
+                    if index == 0 {
+                        assert!(headers.get(PENDING_ID_HEADER).is_none());
+                        assert!(headers.get(PENDING_PAYLOAD_SHA256_HEADER).is_none());
+                    } else {
+                        assert_eq!(
+                            headers
+                                .get(PENDING_ID_HEADER)
+                                .and_then(|value| value.to_str().ok()),
+                            Some("11111111-1111-4111-8111-111111111111")
+                        );
+                        assert_eq!(
+                            headers
+                                .get(PENDING_PAYLOAD_SHA256_HEADER)
+                                .and_then(|value| value.to_str().ok()),
+                            Some(payload_sha256.as_str())
+                        );
+                    }
+                    if index < 2 {
+                        return (
+                            StatusCode::ACCEPTED,
+                            Json(json!({
+                                "contract": PENDING_AUTHORIZATION_CONTRACT,
+                                "status": "pending",
+                                "pending_id": pending_id,
+                                "idempotency_id": body["id"],
+                                "correlation_id": correlation_id,
+                                "payload_sha256": payload_sha256,
+                                "ttl_seconds": 600,
+                                "poll_after_ms": 1
+                            })),
+                        )
+                            .into_response();
+                    }
+                    (StatusCode::OK, Json(authorization)).into_response()
+                }
+            }),
+        )
+        .route(
+            "/execution-receipts",
+            post(|Json(receipt): Json<Value>| async move {
+                (
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "status": "recorded",
+                        "contract": EXECUTION_CONTRACT,
+                        "stage": "execution.completed",
+                        "authorization_id": receipt["authorization_id"],
+                        "receipt_sha256": "sha256:pending-resume"
+                    })),
+                )
+            }),
+        );
+    let (url, shutdown) = spawn(app).await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let store = MemoryExecutionStore::default();
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .durable_execution_store(store.clone())
+        .idempotent_tool_executor("payments-provider/v1", move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: json!({"ok": true}),
+                    effect_id: "provider-pending-123".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    let prepared = PreparedToolRequest::restore(
+        Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+        "payments.transfer",
+        json!({"amount": 100}),
+    )
+    .unwrap();
+
+    let pending = match client
+        .begin_prepared_tool_execution(&prepared)
+        .await
+        .unwrap()
+    {
+        ResumableExecutionOutcome::Pending(pending) => pending,
+        ResumableExecutionOutcome::Completed(_) => panic!("expected pending authorization"),
+    };
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        serde_json::from_slice::<PendingAuthorization>(&serde_json::to_vec(&pending).unwrap())
+            .unwrap(),
+        pending
+    );
+    assert!(matches!(
+        client
+            .resume_prepared_tool_execution(&prepared, &pending)
+            .await
+            .unwrap(),
+        ResumableExecutionOutcome::Pending(_)
+    ));
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+
+    let (first, second) = tokio::join!(
+        client.resume_prepared_tool_execution(&prepared, &pending),
+        client.resume_prepared_tool_execution(&prepared, &pending)
+    );
+    assert_eq!(
+        [&first, &second]
+            .into_iter()
+            .filter(|result| matches!(result, Ok(ResumableExecutionOutcome::Completed(_))))
+            .count(),
+        1
+    );
+    assert_eq!(
+        [&first, &second]
+            .into_iter()
+            .filter(|result| {
+                matches!(
+                    result,
+                    Err(ClavenarError::InvalidConfig(message))
+                        if message.contains("already claimed")
+                )
+            })
+            .count(),
+        1
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 4);
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    let state = store.state.lock().unwrap();
+    assert_eq!(state.intents.len(), 1);
+    assert_eq!(state.completions.len(), 1);
+    assert_eq!(state.claimed_authorizations.len(), 1);
     drop(shutdown);
 }
 

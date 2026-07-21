@@ -171,6 +171,41 @@ set; no sibling reaches the registered executor until the whole batch is
 approved. HIL modification re-gates the complete candidate, while deny,
 review, expiry, cancellation, and policy change release zero siblings.
 
+### 1b. Pending human review — retained request resume
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller
+    participant SDK
+    participant Proxy
+    participant HIL
+    participant Store
+    participant Executor
+
+    Caller->>SDK: begin_prepared_tool_execution(&prepared)
+    SDK->>Proxy: exact prepared payload + decision/idempotency headers
+    Proxy->>HIL: create deterministic pending ID + exact binding
+    HIL-->>Proxy: one durable pending row
+    Proxy-->>SDK: 202 exact pending handle
+    SDK-->>Caller: Pending(handle), zero effects
+    Caller->>SDK: resume_prepared_tool_execution(&same prepared, &handle)
+    SDK->>Proxy: same bytes + pending ID/digest headers
+    Proxy->>HIL: idempotent poll of the same row
+    HIL-->>Proxy: approved
+    Proxy-->>SDK: identity-signed exact authorization
+    SDK->>Store: atomic claim_intent_once(authorization ID)
+    Store-->>SDK: first claimant only
+    SDK->>Executor: exact authorized payload
+    SDK-->>Caller: Completed(actual result + receipt metadata)
+```
+
+The pending handle and prepared request are both serializable. Payload,
+workload, idempotency, correlation, pending-ID, or digest substitution fails
+closed. Polling and denial/expiry release no executor effect. A store without
+atomic single-use claims cannot resume, and concurrent resumes of one approval
+produce at most one executor invocation.
+
 ---
 
 ## 2. `LedgerClient` — audit fetch and verify

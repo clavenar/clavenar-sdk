@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.6",
+  "contract": "clavenar.pending-authorization/v1",
+  "decisionWireContract": "clavenar.decision/v1",
+  "pending": {
+    "httpStatus": 202,
+    "upstreamEffects": 0,
+    "stableHandle": true,
+    "duplicateReviewRows": 0,
+    "fields": [
+      "pending-id",
+      "idempotency-id",
+      "correlation-id",
+      "exact-payload-sha256",
+      "ttl-seconds",
+      "poll-after-ms"
+    ]
+  },
+  "resume": {
+    "requestSource": "retained-prepared-request",
+    "modelReplacementCallAllowed": false,
+    "pendingResult": "return-same-exact-handle",
+    "denyOrExpiryResult": "terminal-no-effect",
+    "approvalResult": "identity-signed-exact-authorization",
+    "modificationResult": "independently-regate-and-sign-exact-candidate"
+  },
+  "singleUse": {
+    "durableAtomicClaimRequired": true,
+    "executorInvocationsPerAuthorization": 1,
+    "concurrentOrRepeatedResumeEffects": 1,
+    "unsupportedStorePosture": "fail-before-executor"
+  },
+  "bindings": [
+    "verified-workload",
+    "idempotency-id",
+    "deterministic-correlation-id",
+    "deterministic-pending-id",
+    "exact-canonical-payload-digest"
+  ],
+  "litePosture": {
+    "sharedPendingContractAndLifecycleStatus": true,
+    "durableCorrelationPolling": true,
+    "sdkAuthorizationIssuer": false,
+    "serverExecutionCompatibilityRetained": true
+  },
+  "retainedFeatures": [
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}

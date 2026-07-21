@@ -68,13 +68,15 @@ pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use execution::{
     ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT,
-    ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME, Authorization, DECISION_CONTRACT,
-    DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_CONTRACT,
+    ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME, Authorization, AuthorizationClaim,
+    DECISION_CONTRACT, DECISION_CONTRACT_HEADER, DURABLE_EXECUTION_OUTBOX_CONTRACT,
     DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT, DurableExecutionStore, DurableStoreFuture,
     EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionCompletion, ExecutionEffect,
     ExecutionIntent, ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature,
-    ModelToolCall, PolicyBundleProvenance, PreparedToolBatch, PreparedToolRequest,
-    ReceiptOutboxEntry, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT,
+    ModelToolCall, PENDING_AUTHORIZATION_CONTRACT, PENDING_AUTHORIZATION_CONTRACT_DOCUMENT,
+    PENDING_ID_HEADER, PENDING_PAYLOAD_SHA256_HEADER, PendingAuthorization, PolicyBundleProvenance,
+    PreparedToolBatch, PreparedToolRequest, ReceiptOutboxEntry, ReceiptRecorded,
+    ResumableExecutionOutcome, SDK_EXECUTION_AUTHORITY_CONTRACT,
     SIDE_EFFECT_FREE_DECISION_CONTRACT, STABLE_REQUEST_IDENTITY_CONTRACT, SignedAuthorization,
     ToolExecutionRequest, WorkloadSignature,
 };

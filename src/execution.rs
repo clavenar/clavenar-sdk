@@ -4,8 +4,10 @@
 //! upstream. The SDK invokes its registered executor with those signed bytes,
 //! then durably stores the actual effect and submits a terminal receipt from a
 //! retrying outbox with the private P-256 key for the same mTLS SVID.
-//! Whole-batch decisions share this path; uncertain-effect recovery, automatic
-//! execution retry, and non-Rust SDK parity remain later migration work.
+//! Whole-batch decisions share this path. Human-review decisions return a
+//! stable pending handle; the retained prepared request polls and atomically
+//! claims the eventual exact authorization once. Uncertain-effect recovery,
+//! automatic execution retry, and non-Rust SDK parity remain later work.
 
 use std::{collections::HashSet, fmt, future::Future, ops::Deref, pin::Pin, sync::Arc};
 
@@ -34,6 +36,29 @@ pub type DurableStoreFuture<T> =
 /// `mark_receipt_delivered` succeeds.
 pub trait DurableExecutionStore: fmt::Debug + Send + Sync + 'static {
     fn commit_intent(&self, intent: ExecutionIntent) -> DurableStoreFuture<()>;
+
+    /// Whether this store implements an atomic first-claim boundary for a
+    /// resumed human-approved authorization. The default is deliberately
+    /// false so existing WP-06.5 stores fail before an executor rather than
+    /// pretending that an ordinary intent insert is a single-use claim.
+    fn supports_single_use_authorization(&self) -> bool {
+        false
+    }
+
+    /// Atomically commit the exact intent only for the first claimant. A
+    /// concurrent or repeated claimant returns `AlreadyClaimed`; it must not
+    /// invoke an executor. Stores opt in through
+    /// `supports_single_use_authorization` and override this method together.
+    fn claim_intent_once(
+        &self,
+        _intent: ExecutionIntent,
+    ) -> DurableStoreFuture<AuthorizationClaim> {
+        Box::pin(async {
+            Err(ClavenarError::InvalidConfig(
+                "durable execution store does not support single-use authorization claims".into(),
+            ))
+        })
+    }
 
     fn commit_effect_and_enqueue_receipt(
         &self,
@@ -100,6 +125,9 @@ pub const DECISION_CONTRACT_HEADER: &str = "x-clavenar-decision-contract";
 pub const EXECUTION_CONTRACT: &str = "clavenar.execution/v1";
 pub const EXECUTION_CONTRACT_HEADER: &str = "x-clavenar-execution-contract";
 pub const IDEMPOTENCY_ID_HEADER: &str = "x-clavenar-idempotency-id";
+pub const PENDING_AUTHORIZATION_CONTRACT: &str = "clavenar.pending-authorization/v1";
+pub const PENDING_ID_HEADER: &str = "x-clavenar-pending-id";
+pub const PENDING_PAYLOAD_SHA256_HEADER: &str = "x-clavenar-pending-payload-sha256";
 pub const ATOMIC_TOOL_CALL_BATCH_CONTRACT: &str = "clavenar.atomic-tool-call-batch/v1";
 pub const ATOMIC_TOOL_CALL_BATCH_METHOD: &str = "clavenar/tools.batch";
 pub const ATOMIC_TOOL_CALL_BATCH_NAME: &str = "clavenar.atomic-batch";
@@ -113,6 +141,8 @@ pub const STABLE_REQUEST_IDENTITY_CONTRACT: &str =
     include_str!("../contracts/stable-request-identity-v1.json");
 pub const DURABLE_EXECUTION_OUTBOX_CONTRACT: &str =
     include_str!("../contracts/durable-execution-outbox-v1.json");
+pub const PENDING_AUTHORIZATION_CONTRACT_DOCUMENT: &str =
+    include_str!("../contracts/pending-authorization-v1.json");
 pub const DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT: &str = "clavenar.sdk-durable-intent-outbox/v1";
 
 const MAX_BATCH_CALLS: usize = 128;
@@ -399,11 +429,42 @@ pub struct ReceiptRecorded {
     pub receipt_sha256: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuthorizationClaim {
+    Claimed,
+    AlreadyClaimed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PendingAuthorization {
+    pub contract: String,
+    pub status: String,
+    pub pending_id: Uuid,
+    pub idempotency_id: Uuid,
+    pub correlation_id: Uuid,
+    pub payload_sha256: String,
+    pub ttl_seconds: i64,
+    pub poll_after_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum AuthorizationState {
+    Authorized(Box<SignedAuthorization>),
+    Pending(PendingAuthorization),
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutionOutcome {
     pub receipt: ReceiptRecorded,
     pub result: Value,
     pub effect_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum ResumableExecutionOutcome {
+    Pending(PendingAuthorization),
+    Completed(ExecutionOutcome),
 }
 
 impl ClavenarClient {
@@ -430,12 +491,7 @@ impl ClavenarClient {
         name: &str,
         arguments: Value,
     ) -> Result<SignedAuthorization, ClavenarError> {
-        let body = json!({
-            "jsonrpc": "2.0",
-            "id": idempotency_id.to_string(),
-            "method": "tools/call",
-            "params": { "name": name, "arguments": arguments },
-        });
+        let body = tool_envelope(idempotency_id, name, arguments);
         self.authorize_payload(idempotency_id, &body).await
     }
 
@@ -479,7 +535,7 @@ impl ClavenarClient {
     ) -> Result<ExecutionOutcome, ClavenarError> {
         let (executor, signing_key, store) = self.execution_dependencies()?;
         let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
-        self.execute_authorization(executor, signing_key, store, authorization)
+        self.execute_authorization(executor, signing_key, store, authorization, false)
             .await
     }
 
@@ -508,7 +564,7 @@ impl ClavenarClient {
     ) -> Result<ExecutionOutcome, ClavenarError> {
         let (executor, signing_key, store) = self.execution_dependencies()?;
         let authorization = self.authorize_tool_batch(idempotency_id, calls).await?;
-        self.execute_authorization(executor, signing_key, store, authorization)
+        self.execute_authorization(executor, signing_key, store, authorization, false)
             .await
     }
 
@@ -521,6 +577,133 @@ impl ClavenarClient {
         prepared.validate()?;
         self.execute_tool_batch(prepared.idempotency_id, prepared.calls.clone())
             .await
+    }
+
+    /// Start a prepared SDK-governed tool request. A human-review decision
+    /// returns a serializable pending handle and releases no executor effect.
+    /// A direct authorization completes through the normal durable path.
+    pub async fn begin_prepared_tool_execution(
+        &self,
+        prepared: &PreparedToolRequest,
+    ) -> Result<ResumableExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
+        let body = tool_envelope(
+            prepared.idempotency_id,
+            &prepared.name,
+            prepared.arguments.clone(),
+        );
+        match self
+            .authorize_payload_state(prepared.idempotency_id, &body, None)
+            .await?
+        {
+            AuthorizationState::Pending(pending) => Ok(ResumableExecutionOutcome::Pending(pending)),
+            AuthorizationState::Authorized(authorization) => self
+                .execute_authorization(executor, signing_key, store, *authorization, false)
+                .await
+                .map(ResumableExecutionOutcome::Completed),
+        }
+    }
+
+    /// Poll and resume the exact retained prepared request. The caller does
+    /// not provide another model tool call; local digest validation happens
+    /// before HTTP. An approval is atomically claimed from the durable store
+    /// before the registered executor is released.
+    pub async fn resume_prepared_tool_execution(
+        &self,
+        prepared: &PreparedToolRequest,
+        pending: &PendingAuthorization,
+    ) -> Result<ResumableExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
+        require_single_use_store(store)?;
+        let body = tool_envelope(
+            prepared.idempotency_id,
+            &prepared.name,
+            prepared.arguments.clone(),
+        );
+        validate_pending_authorization(pending, prepared.idempotency_id, &body)?;
+        match self
+            .authorize_payload_state(prepared.idempotency_id, &body, Some(pending))
+            .await?
+        {
+            AuthorizationState::Pending(retained) => {
+                if retained != *pending {
+                    return Err(ClavenarError::InvalidConfig(
+                        "Proxy changed the retained pending authorization handle".into(),
+                    ));
+                }
+                Ok(ResumableExecutionOutcome::Pending(retained))
+            }
+            AuthorizationState::Authorized(authorization) => self
+                .execute_authorization(executor, signing_key, store, *authorization, true)
+                .await
+                .map(ResumableExecutionOutcome::Completed),
+        }
+    }
+
+    /// Batch counterpart to [`Self::begin_prepared_tool_execution`].
+    pub async fn begin_prepared_tool_batch_execution(
+        &self,
+        prepared: &PreparedToolBatch,
+    ) -> Result<ResumableExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
+        let body = atomic_batch_envelope(prepared.idempotency_id, prepared.calls.clone());
+        match self
+            .authorize_payload_state(prepared.idempotency_id, &body, None)
+            .await?
+        {
+            AuthorizationState::Pending(pending) => Ok(ResumableExecutionOutcome::Pending(pending)),
+            AuthorizationState::Authorized(authorization) => {
+                validate_batch_authorization(
+                    &authorization,
+                    prepared.idempotency_id,
+                    &prepared.calls,
+                    &body,
+                )?;
+                self.execute_authorization(executor, signing_key, store, *authorization, false)
+                    .await
+                    .map(ResumableExecutionOutcome::Completed)
+            }
+        }
+    }
+
+    /// Batch counterpart to [`Self::resume_prepared_tool_execution`].
+    pub async fn resume_prepared_tool_batch_execution(
+        &self,
+        prepared: &PreparedToolBatch,
+        pending: &PendingAuthorization,
+    ) -> Result<ResumableExecutionOutcome, ClavenarError> {
+        prepared.validate()?;
+        let (executor, signing_key, store) = self.execution_dependencies()?;
+        require_single_use_store(store)?;
+        let body = atomic_batch_envelope(prepared.idempotency_id, prepared.calls.clone());
+        validate_pending_authorization(pending, prepared.idempotency_id, &body)?;
+        match self
+            .authorize_payload_state(prepared.idempotency_id, &body, Some(pending))
+            .await?
+        {
+            AuthorizationState::Pending(retained) => {
+                if retained != *pending {
+                    return Err(ClavenarError::InvalidConfig(
+                        "Proxy changed the retained pending authorization handle".into(),
+                    ));
+                }
+                Ok(ResumableExecutionOutcome::Pending(retained))
+            }
+            AuthorizationState::Authorized(authorization) => {
+                validate_batch_authorization(
+                    &authorization,
+                    prepared.idempotency_id,
+                    &prepared.calls,
+                    &body,
+                )?;
+                self.execute_authorization(executor, signing_key, store, *authorization, true)
+                    .await
+                    .map(ResumableExecutionOutcome::Completed)
+            }
+        }
     }
 
     /// Deliver pending workload-signed receipts without authorizing or
@@ -560,6 +743,24 @@ impl ClavenarClient {
         idempotency_id: Uuid,
         body: &Value,
     ) -> Result<SignedAuthorization, ClavenarError> {
+        match self
+            .authorize_payload_state(idempotency_id, body, None)
+            .await?
+        {
+            AuthorizationState::Authorized(authorization) => Ok(*authorization),
+            AuthorizationState::Pending(pending) => Err(ClavenarError::Server {
+                status: StatusCode::ACCEPTED,
+                body: serde_json::to_string(&pending)?,
+            }),
+        }
+    }
+
+    async fn authorize_payload_state(
+        &self,
+        idempotency_id: Uuid,
+        body: &Value,
+        pending: Option<&PendingAuthorization>,
+    ) -> Result<AuthorizationState, ClavenarError> {
         let endpoint = self
             .base_url
             .join("mcp")
@@ -571,18 +772,42 @@ impl ClavenarClient {
             .header(DECISION_CONTRACT_HEADER, DECISION_CONTRACT)
             .header(IDEMPOTENCY_ID_HEADER, idempotency_id.to_string())
             .json(body);
+        if let Some(pending) = pending {
+            request = request
+                .header(PENDING_ID_HEADER, pending.pending_id.to_string())
+                .header(PENDING_PAYLOAD_SHA256_HEADER, &pending.payload_sha256);
+        }
         if let Auth::Bearer(token) = &self.auth {
             request = request.bearer_auth(token);
         }
         let response = request.send().await?;
         let status = response.status();
         let raw = response.text().await?;
+        if status == StatusCode::ACCEPTED {
+            let pending: PendingAuthorization = serde_json::from_str(&raw)?;
+            validate_pending_authorization(&pending, idempotency_id, body)?;
+            return Ok(AuthorizationState::Pending(pending));
+        }
         if status != StatusCode::OK {
             return execution_http_error(status, raw);
         }
         let authorization: SignedAuthorization = serde_json::from_str(&raw)?;
         validate_authorization(&authorization, idempotency_id)?;
-        Ok(authorization)
+        if authorization.authorization.modification_diff.is_none()
+            && authorization.authorization.execution_payload != *body
+        {
+            return Err(ClavenarError::InvalidConfig(
+                "Proxy returned an unmodified authorization for a different payload".into(),
+            ));
+        }
+        if pending.is_some_and(|pending| {
+            authorization.authorization.correlation_id != pending.correlation_id
+        }) {
+            return Err(ClavenarError::InvalidConfig(
+                "Proxy returned an authorization for a different pending correlation".into(),
+            ));
+        }
+        Ok(AuthorizationState::Authorized(Box::new(authorization)))
     }
 
     fn execution_dependencies(
@@ -620,6 +845,7 @@ impl ClavenarClient {
         signing_key: &SigningKey,
         store: &dyn DurableExecutionStore,
         authorization: SignedAuthorization,
+        single_use: bool,
     ) -> Result<ExecutionOutcome, ClavenarError> {
         let claims = &authorization.authorization;
         let intent = ExecutionIntent {
@@ -634,7 +860,19 @@ impl ClavenarClient {
             executor_id: executor.id.clone(),
             authorization: authorization.clone(),
         };
-        store.commit_intent(intent).await?;
+        if single_use {
+            require_single_use_store(store)?;
+            match store.claim_intent_once(intent).await? {
+                AuthorizationClaim::Claimed => {}
+                AuthorizationClaim::AlreadyClaimed => {
+                    return Err(ClavenarError::InvalidConfig(
+                        "pending authorization was already claimed".into(),
+                    ));
+                }
+            }
+        } else {
+            store.commit_intent(intent).await?;
+        }
         let effect = executor
             .execute(ToolExecutionRequest {
                 idempotency_id: claims.idempotency_id,
@@ -769,6 +1007,48 @@ fn atomic_batch_envelope(idempotency_id: Uuid, calls: Vec<ModelToolCall>) -> Val
             }
         }
     })
+}
+
+fn tool_envelope(idempotency_id: Uuid, name: &str, arguments: Value) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": idempotency_id.to_string(),
+        "method": "tools/call",
+        "params": { "name": name, "arguments": arguments },
+    })
+}
+
+fn require_single_use_store(store: &dyn DurableExecutionStore) -> Result<(), ClavenarError> {
+    if !store.supports_single_use_authorization() {
+        return Err(ClavenarError::InvalidConfig(
+            "durable execution store must support atomic single-use authorization claims".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_pending_authorization(
+    pending: &PendingAuthorization,
+    idempotency_id: Uuid,
+    body: &Value,
+) -> Result<(), ClavenarError> {
+    let payload_sha256 = sha256(canonical_json_value(body).as_bytes());
+    if pending.contract != PENDING_AUTHORIZATION_CONTRACT
+        || pending.status != "pending"
+        || pending.idempotency_id != idempotency_id
+        || pending.pending_id.is_nil()
+        || pending.correlation_id.is_nil()
+        || pending.payload_sha256 != payload_sha256
+        || pending.ttl_seconds <= 0
+        || pending.ttl_seconds > 86_400
+        || pending.poll_after_ms == 0
+        || pending.poll_after_ms > 60_000
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "Proxy returned an invalid pending authorization handle".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_model_tool_calls(calls: &[ModelToolCall]) -> Result<(), ClavenarError> {
@@ -1064,6 +1344,20 @@ mod tests {
         assert_eq!(contract["completion"]["atomicStoreAndEnqueue"], true);
         assert_eq!(contract["outbox"]["toolReexecutionAllowed"], false);
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn pending_authorization_contract_is_embedded_and_strict() {
+        let contract: Value =
+            serde_json::from_str(PENDING_AUTHORIZATION_CONTRACT_DOCUMENT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.6");
+        assert_eq!(contract["contract"], PENDING_AUTHORIZATION_CONTRACT);
+        assert_eq!(contract["pending"]["httpStatus"], 202);
+        assert_eq!(contract["pending"]["upstreamEffects"], 0);
+        assert_eq!(contract["resume"]["modelReplacementCallAllowed"], false);
+        assert_eq!(contract["singleUse"]["durableAtomicClaimRequired"], true);
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 5);
     }
 
     #[test]

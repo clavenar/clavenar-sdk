@@ -9,6 +9,12 @@ at that version".
 
 ### Added
 
+- Serializable `PendingAuthorization` handles and begin/resume APIs for
+  prepared single-tool and atomic-batch requests. Human-review polling replays
+  the retained request, and approval is atomically claimed once before the
+  registered executor.
+- `DurableExecutionStore::claim_intent_once` opt-in support for a durable
+  single-use authorization boundary; unsupported stores fail closed.
 - `DurableExecutionStore` makes pre-effect intent and post-effect completion
   persistence mandatory for SDK-governed execution. The completion store
   atomically enqueues the workload-signed receipt, and
@@ -41,6 +47,10 @@ at that version".
 
 ### Security
 
+- Pending handles are bound to the verified workload, stable idempotency and
+  correlation IDs, deterministic pending ID, and exact canonical payload
+  digest. Polling, denial, expiry, substitution, and repeated claims release
+  zero additional effects.
 - Missing or unavailable durable intent storage fails closed before an
   executor effect. An effect is never reported successful until its actual
   result/effect ID and signed receipt are durably committed and the outbox
