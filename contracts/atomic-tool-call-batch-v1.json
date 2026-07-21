@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.3",
+  "contract": "clavenar.atomic-tool-call-batch/v1",
+  "decisionWireContract": "clavenar.decision/v1",
+  "executionEvidenceContract": "clavenar.execution/v1",
+  "envelope": {
+    "jsonrpc": "2.0",
+    "method": "clavenar/tools.batch",
+    "toolName": "clavenar.atomic-batch",
+    "batchContractField": "params.arguments.contract",
+    "callsField": "params.arguments.calls"
+  },
+  "constraints": {
+    "minimumCalls": 1,
+    "maximumCalls": 128,
+    "uniqueStableCallIds": true,
+    "exactOrderCommitted": true
+  },
+  "decisionBehavior": {
+    "deny": "release-zero-siblings",
+    "review": "release-zero-siblings",
+    "approve": "release-whole-signed-batch-once",
+    "modify": "regate-and-resign-whole-batch",
+    "expiry": "release-zero-siblings-and-require-fresh-whole-batch-decision",
+    "cancellation": "release-zero-siblings-and-require-fresh-whole-batch-decision",
+    "policyChange": "release-zero-siblings-and-require-fresh-whole-batch-decision"
+  },
+  "releaseBoundary": {
+    "executor": "registered-sdk-executor",
+    "executorInvocationsAfterApprove": 1,
+    "partialReleaseAllowed": false,
+    "hostToolLoopReleaseAllowed": false,
+    "proxyExecutionAllowed": false
+  },
+  "modification": {
+    "callIdentityAndOrderPreserved": true,
+    "completeModifiedPayloadSigned": true,
+    "currentAuthorityAndPolicyRegated": true
+  },
+  "retainedFeatures": [
+    "WP-06.4",
+    "WP-06.5",
+    "WP-06.6",
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}

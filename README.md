@@ -88,6 +88,12 @@ decision headers are absent. Lite rejects decision selectors before upstream
 access until its shared durability contract is available; the SDK never falls
 back to unselected `/mcp` after a decision request.
 
+Model siblings use `execute_tool_batch`. It commits the complete ordered batch
+under [`clavenar.atomic-tool-call-batch/v1`](contracts/atomic-tool-call-batch-v1.json)
+in one decision request. The clone-shared executor receives the whole signed
+batch once only after approval; deny, review, expiry, cancellation, policy
+change, malformed input, or call-identity drift release no sibling.
+
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
 the receipt signature against the TLS leaf used on that same request.
@@ -123,7 +129,7 @@ assert_eq!(outcome.receipt.stage, "execution.completed");
 ```
 
 An exact retry may reuse its UUID; changed bytes under the same UUID are a
-conflict. Automatic retries after an uncertain external effect, batching,
+conflict. Automatic retries after an uncertain external effect, durable batch
 intent capture, other language SDKs, and migration of the legacy
 Proxy-executed default remain WP-06 scope.
 

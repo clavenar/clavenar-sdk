@@ -67,11 +67,12 @@ pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};
 pub use error::ClavenarError;
 pub use execution::{
-    Authorization, DECISION_CONTRACT, DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT,
-    EXECUTION_CONTRACT_HEADER, ExecutionEffect, ExecutionOutcome, ExecutionReceipt,
-    IDEMPOTENCY_ID_HEADER, IdentitySignature, PolicyBundleProvenance, ReceiptRecorded,
-    SDK_EXECUTION_AUTHORITY_CONTRACT, SIDE_EFFECT_FREE_DECISION_CONTRACT, SignedAuthorization,
-    WorkloadSignature,
+    ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT,
+    ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME, Authorization, DECISION_CONTRACT,
+    DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
+    ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature, ModelToolCall,
+    PolicyBundleProvenance, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT,
+    SIDE_EFFECT_FREE_DECISION_CONTRACT, SignedAuthorization, WorkloadSignature,
 };
 pub use hil::{
     ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,

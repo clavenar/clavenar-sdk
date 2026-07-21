@@ -145,6 +145,12 @@ independently from `clavenar.execution/v1` evidence. An absent selector means
 the explicit legacy server-execution `/mcp` contract; the SDK governed path
 never retries by falling back to that mode.
 
+`execute_tool_batch` uses the same authority chain with one canonical
+`clavenar/tools.batch` envelope. Proxy evaluates and signs the complete ordered
+set; no sibling reaches the registered executor until the whole batch is
+approved. HIL modification re-gates the complete candidate, while deny,
+review, expiry, cancellation, and policy change release zero siblings.
+
 ---
 
 ## 2. `LedgerClient` — audit fetch and verify

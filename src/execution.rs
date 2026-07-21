@@ -3,13 +3,14 @@
 //! Proxy authorizes an exact, canonical JSON-RPC payload without invoking the
 //! upstream. The SDK invokes its registered executor with those signed bytes,
 //! then signs and submits a terminal receipt with the private P-256 key for
-//! the same mTLS SVID. Batching, uncertain-effect recovery, automatic retry,
-//! and non-Rust SDK parity remain part of the later executor migration.
+//! the same mTLS SVID. Whole-batch decisions share this path; durable intent,
+//! uncertain-effect recovery, automatic retry, and non-Rust SDK parity remain
+//! part of the later executor migration.
 
-use std::{fmt, future::Future, pin::Pin, sync::Arc};
+use std::{collections::HashSet, fmt, future::Future, pin::Pin, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose};
-use p256::ecdsa::{Signature, signature::Signer as _};
+use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -54,10 +55,49 @@ pub const DECISION_CONTRACT_HEADER: &str = "x-clavenar-decision-contract";
 pub const EXECUTION_CONTRACT: &str = "clavenar.execution/v1";
 pub const EXECUTION_CONTRACT_HEADER: &str = "x-clavenar-execution-contract";
 pub const IDEMPOTENCY_ID_HEADER: &str = "x-clavenar-idempotency-id";
+pub const ATOMIC_TOOL_CALL_BATCH_CONTRACT: &str = "clavenar.atomic-tool-call-batch/v1";
+pub const ATOMIC_TOOL_CALL_BATCH_METHOD: &str = "clavenar/tools.batch";
+pub const ATOMIC_TOOL_CALL_BATCH_NAME: &str = "clavenar.atomic-batch";
 pub const SDK_EXECUTION_AUTHORITY_CONTRACT: &str =
     include_str!("../contracts/sdk-execution-authority-v1.json");
 pub const SIDE_EFFECT_FREE_DECISION_CONTRACT: &str =
     include_str!("../contracts/side-effect-free-decision-v1.json");
+pub const ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT: &str =
+    include_str!("../contracts/atomic-tool-call-batch-v1.json");
+
+const MAX_BATCH_CALLS: usize = 128;
+
+/// One model-produced sibling in an atomically authorized tool-call batch.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct ModelToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AtomicBatchArguments {
+    contract: String,
+    calls: Vec<ModelToolCall>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AtomicBatchParams {
+    name: String,
+    arguments: AtomicBatchArguments,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
+struct AtomicBatchEnvelope {
+    jsonrpc: String,
+    id: String,
+    method: String,
+    params: AtomicBatchParams,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -191,28 +231,20 @@ impl ClavenarClient {
             "method": "tools/call",
             "params": { "name": name, "arguments": arguments },
         });
-        let endpoint = self
-            .base_url
-            .join("mcp")
-            .map_err(|error| ClavenarError::InvalidConfig(format!("join /mcp: {error}")))?;
-        let mut request = self
-            .http
-            .client()
-            .post(endpoint)
-            .header(DECISION_CONTRACT_HEADER, DECISION_CONTRACT)
-            .header(IDEMPOTENCY_ID_HEADER, idempotency_id.to_string())
-            .json(&body);
-        if let Auth::Bearer(token) = &self.auth {
-            request = request.bearer_auth(token);
-        }
-        let response = request.send().await?;
-        let status = response.status();
-        let raw = response.text().await?;
-        if status != StatusCode::OK {
-            return execution_http_error(status, raw);
-        }
-        let authorization: SignedAuthorization = serde_json::from_str(&raw)?;
-        validate_authorization(&authorization, idempotency_id)?;
+        self.authorize_payload(idempotency_id, &body).await
+    }
+
+    /// Request one atomic decision for a complete ordered model tool-call
+    /// batch. No sibling is exposed to the registered executor by this method.
+    pub async fn authorize_tool_batch(
+        &self,
+        idempotency_id: Uuid,
+        calls: Vec<ModelToolCall>,
+    ) -> Result<SignedAuthorization, ClavenarError> {
+        validate_model_tool_calls(&calls)?;
+        let body = atomic_batch_envelope(idempotency_id, calls.clone());
+        let authorization = self.authorize_payload(idempotency_id, &body).await?;
+        validate_batch_authorization(&authorization, idempotency_id, &calls, &body)?;
         Ok(authorization)
     }
 
@@ -229,6 +261,59 @@ impl ClavenarClient {
         name: &str,
         arguments: Value,
     ) -> Result<ExecutionOutcome, ClavenarError> {
+        let (executor, signing_key) = self.execution_dependencies()?;
+        let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
+        self.execute_authorization(executor, signing_key, authorization)
+            .await
+    }
+
+    /// Atomically authorize a complete model tool-call batch, then invoke the
+    /// registered SDK executor exactly once with the whole signed payload.
+    /// Individual siblings are never returned to the host's normal tool loop.
+    pub async fn execute_tool_batch(
+        &self,
+        idempotency_id: Uuid,
+        calls: Vec<ModelToolCall>,
+    ) -> Result<ExecutionOutcome, ClavenarError> {
+        let (executor, signing_key) = self.execution_dependencies()?;
+        let authorization = self.authorize_tool_batch(idempotency_id, calls).await?;
+        self.execute_authorization(executor, signing_key, authorization)
+            .await
+    }
+
+    async fn authorize_payload(
+        &self,
+        idempotency_id: Uuid,
+        body: &Value,
+    ) -> Result<SignedAuthorization, ClavenarError> {
+        let endpoint = self
+            .base_url
+            .join("mcp")
+            .map_err(|error| ClavenarError::InvalidConfig(format!("join /mcp: {error}")))?;
+        let mut request = self
+            .http
+            .client()
+            .post(endpoint)
+            .header(DECISION_CONTRACT_HEADER, DECISION_CONTRACT)
+            .header(IDEMPOTENCY_ID_HEADER, idempotency_id.to_string())
+            .json(body);
+        if let Auth::Bearer(token) = &self.auth {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let raw = response.text().await?;
+        if status != StatusCode::OK {
+            return execution_http_error(status, raw);
+        }
+        let authorization: SignedAuthorization = serde_json::from_str(&raw)?;
+        validate_authorization(&authorization, idempotency_id)?;
+        Ok(authorization)
+    }
+
+    fn execution_dependencies(
+        &self,
+    ) -> Result<(&RegisteredToolExecutor, &SigningKey), ClavenarError> {
         let executor = self.tool_executor.as_ref().ok_or_else(|| {
             ClavenarError::InvalidConfig(
                 "tool_executor is required for SDK-governed execution".into(),
@@ -239,7 +324,15 @@ impl ClavenarClient {
                 "execution_signing_key is required for SDK-governed execution".into(),
             )
         })?;
-        let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
+        Ok((executor, signing_key))
+    }
+
+    async fn execute_authorization(
+        &self,
+        executor: &RegisteredToolExecutor,
+        signing_key: &SigningKey,
+        authorization: SignedAuthorization,
+    ) -> Result<ExecutionOutcome, ClavenarError> {
         let effect = executor
             .execute(authorization.authorization.execution_payload.clone())
             .await?;
@@ -316,6 +409,83 @@ impl ClavenarClient {
         }
         Ok(serde_json::from_str(&raw)?)
     }
+}
+
+fn atomic_batch_envelope(idempotency_id: Uuid, calls: Vec<ModelToolCall>) -> Value {
+    json!({
+        "jsonrpc": "2.0",
+        "id": idempotency_id.to_string(),
+        "method": ATOMIC_TOOL_CALL_BATCH_METHOD,
+        "params": {
+            "name": ATOMIC_TOOL_CALL_BATCH_NAME,
+            "arguments": {
+                "contract": ATOMIC_TOOL_CALL_BATCH_CONTRACT,
+                "calls": calls,
+            }
+        }
+    })
+}
+
+fn validate_model_tool_calls(calls: &[ModelToolCall]) -> Result<(), ClavenarError> {
+    if calls.is_empty() || calls.len() > MAX_BATCH_CALLS {
+        return Err(ClavenarError::InvalidConfig(format!(
+            "atomic tool-call batch must contain 1..={MAX_BATCH_CALLS} calls"
+        )));
+    }
+    let mut ids = HashSet::with_capacity(calls.len());
+    for call in calls {
+        if call.id.is_empty() || call.id.len() > 256 || !ids.insert(call.id.as_str()) {
+            return Err(ClavenarError::InvalidConfig(
+                "atomic tool-call batch IDs must be unique and contain 1..=256 characters".into(),
+            ));
+        }
+        if call.name.is_empty() || call.name.len() > 256 {
+            return Err(ClavenarError::InvalidConfig(
+                "atomic tool-call names must contain 1..=256 characters".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_batch_authorization(
+    signed: &SignedAuthorization,
+    idempotency_id: Uuid,
+    requested_calls: &[ModelToolCall],
+    requested_payload: &Value,
+) -> Result<(), ClavenarError> {
+    let envelope: AtomicBatchEnvelope =
+        serde_json::from_value(signed.authorization.execution_payload.clone()).map_err(|_| {
+            ClavenarError::InvalidConfig(
+                "Proxy returned an invalid atomic tool-call batch authorization".into(),
+            )
+        })?;
+    validate_model_tool_calls(&envelope.params.arguments.calls)?;
+    let requested_ids = requested_calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect::<Vec<_>>();
+    let authorized_ids = envelope
+        .params
+        .arguments
+        .calls
+        .iter()
+        .map(|call| call.id.as_str())
+        .collect::<Vec<_>>();
+    if envelope.jsonrpc != "2.0"
+        || envelope.id != idempotency_id.to_string()
+        || envelope.method != ATOMIC_TOOL_CALL_BATCH_METHOD
+        || envelope.params.name != ATOMIC_TOOL_CALL_BATCH_NAME
+        || envelope.params.arguments.contract != ATOMIC_TOOL_CALL_BATCH_CONTRACT
+        || authorized_ids != requested_ids
+        || (signed.authorization.modification_diff.is_none()
+            && signed.authorization.execution_payload != *requested_payload)
+    {
+        return Err(ClavenarError::InvalidConfig(
+            "Proxy returned an invalid atomic tool-call batch authorization".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_authorization(
@@ -460,5 +630,22 @@ mod tests {
             4
         );
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn atomic_tool_call_batch_contract_is_embedded_and_strict() {
+        let contract: Value =
+            serde_json::from_str(ATOMIC_TOOL_CALL_BATCH_CONTRACT_DOCUMENT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.3");
+        assert_eq!(contract["contract"], ATOMIC_TOOL_CALL_BATCH_CONTRACT);
+        assert_eq!(contract["decisionWireContract"], DECISION_CONTRACT);
+        assert_eq!(
+            contract["envelope"]["method"],
+            ATOMIC_TOOL_CALL_BATCH_METHOD
+        );
+        assert_eq!(contract["constraints"]["maximumCalls"], 128);
+        assert_eq!(contract["releaseBoundary"]["partialReleaseAllowed"], false);
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 8);
     }
 }

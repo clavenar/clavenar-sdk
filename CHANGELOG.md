@@ -9,6 +9,10 @@ at that version".
 
 ### Added
 
+- `execute_tool_batch` and `authorize_tool_batch` commit a bounded ordered set
+  of uniquely identified model tool calls in one side-effect-free decision.
+  The registered executor sees the complete signed batch exactly once only
+  after whole-batch approval; partial sibling release is not exposed.
 - Attributed `SimClient` mutation variants that forward a bounded
   `X-Clavenar-Operator` audit value, plus a configurable positive request
   deadline (twenty seconds by default) on simulator reads and writes.
@@ -25,6 +29,9 @@ at that version".
 
 ### Security
 
+- Deny, review, expiry, cancellation, policy change, invalid structure, and
+  call-identity drift release zero batch siblings. Modified batches must retain
+  call identity/order and arrive as one complete re-gated signed payload.
 - Missing executor configuration fails before authorization. Denied or invalid
   authorization never reaches the executor, and receipt persistence failure
   cannot report successful governed execution.

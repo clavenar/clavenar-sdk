@@ -33,9 +33,10 @@ use tokio::sync::oneshot;
 
 use base64::{Engine as _, engine::general_purpose};
 use clavenar_sdk::{
+    ATOMIC_TOOL_CALL_BATCH_CONTRACT, ATOMIC_TOOL_CALL_BATCH_METHOD, ATOMIC_TOOL_CALL_BATCH_NAME,
     AuditFilterParams, Auth, ClavenarClient, ClavenarError, DECISION_CONTRACT,
     DECISION_CONTRACT_HEADER, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
-    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient,
+    ExportOutcome, IDEMPOTENCY_ID_HEADER, LedgerClient, ModelToolCall,
 };
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier as _};
 use serde::Serialize;
@@ -71,6 +72,53 @@ async fn spawn(router: Router) -> (String, oneshot::Sender<()>) {
 struct ExecutionStub {
     authorization: Value,
     verifying_key: VerifyingKey,
+}
+
+fn model_batch() -> Vec<ModelToolCall> {
+    vec![
+        ModelToolCall {
+            id: "call-a".into(),
+            name: "payments.lookup".into(),
+            arguments: json!({"account": "one"}),
+        },
+        ModelToolCall {
+            id: "call-b".into(),
+            name: "payments.transfer".into(),
+            arguments: json!({"amount": 20}),
+        },
+    ]
+}
+
+fn batch_authorization(execution_payload: Value, modified: bool) -> Value {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let mut signed = fixture["authorization"].clone();
+    let claims = signed["authorization"].as_object_mut().unwrap();
+    let idempotency_id = execution_payload["id"].clone();
+    claims.insert("idempotency_id".into(), idempotency_id);
+    claims.insert("method".into(), json!(ATOMIC_TOOL_CALL_BATCH_METHOD));
+    claims.insert("tool_name".into(), json!(ATOMIC_TOOL_CALL_BATCH_NAME));
+    claims.insert(
+        "payload_sha256".into(),
+        json!(format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(
+                canonical_json_value(&execution_payload).as_bytes()
+            ))
+        )),
+    );
+    claims.insert("execution_payload".into(), execution_payload);
+    claims.insert(
+        "modification_diff".into(),
+        if modified {
+            json!({"kind": "replace", "path": "/params/arguments/calls/1/arguments/amount"})
+        } else {
+            Value::Null
+        },
+    );
+    signed
 }
 
 #[tokio::test]
@@ -190,6 +238,207 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
     assert_eq!(outcome.effect_id, "provider-operation-123");
     assert_eq!(outcome.receipt.stage, "execution.completed");
     assert_eq!(effects.load(Ordering::SeqCst), 1);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn atomic_batch_is_fully_authorized_before_one_executor_invocation() {
+    let signing_key = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(|headers: HeaderMap, Json(body): Json<Value>| async move {
+                assert_eq!(
+                    headers
+                        .get(DECISION_CONTRACT_HEADER)
+                        .and_then(|value| value.to_str().ok()),
+                    Some(DECISION_CONTRACT)
+                );
+                assert_eq!(body["method"], ATOMIC_TOOL_CALL_BATCH_METHOD);
+                assert_eq!(body["params"]["name"], ATOMIC_TOOL_CALL_BATCH_NAME);
+                assert_eq!(
+                    body["params"]["arguments"]["contract"],
+                    ATOMIC_TOOL_CALL_BATCH_CONTRACT
+                );
+                assert_eq!(
+                    body["params"]["arguments"]["calls"]
+                        .as_array()
+                        .unwrap()
+                        .len(),
+                    2
+                );
+                (StatusCode::OK, Json(batch_authorization(body, false)))
+            }),
+        )
+        .route(
+            "/execution-receipts",
+            post(|Json(receipt): Json<Value>| async move {
+                assert_eq!(receipt["stage"], "execution.completed");
+                assert_eq!(
+                    receipt["authorization"]["authorization"]["method"],
+                    ATOMIC_TOOL_CALL_BATCH_METHOD
+                );
+                (
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "status": "recorded",
+                        "contract": EXECUTION_CONTRACT,
+                        "stage": "execution.completed",
+                        "authorization_id": receipt["authorization_id"],
+                        "receipt_sha256": "sha256:batch"
+                    })),
+                )
+            }),
+        );
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(signing_key)
+        .tool_executor(move |payload| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                assert_eq!(effects.fetch_add(1, Ordering::SeqCst), 0);
+                let calls = payload["params"]["arguments"]["calls"].as_array().unwrap();
+                assert_eq!(calls.len(), 2);
+                assert_eq!(calls[0]["id"], "call-a");
+                assert_eq!(calls[1]["id"], "call-b");
+                Ok(ExecutionEffect {
+                    result: json!([{"id": "call-a", "result": "found"}, {"id": "call-b", "result": "sent"}]),
+                    effect_id: "provider-batch-123".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    let outcome = client
+        .execute_tool_batch(
+            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+            model_batch(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    assert_eq!(outcome.result.as_array().unwrap().len(), 2);
+    assert_eq!(outcome.effect_id, "provider-batch-123");
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn modified_atomic_batch_preserves_all_sibling_identity_before_execution() {
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(|Json(mut body): Json<Value>| async move {
+                body["params"]["arguments"]["calls"][1]["arguments"]["amount"] = json!(25);
+                (StatusCode::OK, Json(batch_authorization(body, true)))
+            }),
+        )
+        .route(
+            "/execution-receipts",
+            post(|Json(receipt): Json<Value>| async move {
+                (
+                    StatusCode::CREATED,
+                    Json(json!({
+                        "status": "recorded",
+                        "contract": EXECUTION_CONTRACT,
+                        "stage": "execution.completed",
+                        "authorization_id": receipt["authorization_id"],
+                        "receipt_sha256": "sha256:modified-batch"
+                    })),
+                )
+            }),
+        );
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .tool_executor(move |payload| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                let calls = payload["params"]["arguments"]["calls"].as_array().unwrap();
+                assert_eq!(calls[0]["id"], "call-a");
+                assert_eq!(calls[1]["id"], "call-b");
+                assert_eq!(calls[1]["arguments"]["amount"], 25);
+                Ok(ExecutionEffect {
+                    result: json!({"modified": true}),
+                    effect_id: "provider-modified-batch".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    client
+        .execute_tool_batch(
+            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+            model_batch(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn nonapproval_and_invalid_batches_release_zero_siblings() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let requests = Arc::clone(&server_requests);
+            async move {
+                let index = requests.fetch_add(1, Ordering::SeqCst);
+                [
+                    StatusCode::FORBIDDEN,
+                    StatusCode::ACCEPTED,
+                    StatusCode::GONE,
+                    StatusCode::CONFLICT,
+                    StatusCode::PRECONDITION_FAILED,
+                ][index]
+            }
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .tool_executor(move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: Value::Null,
+                    effect_id: "unexpected".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    for _ in 0..5 {
+        assert!(
+            client
+                .execute_tool_batch(Uuid::new_v4(), model_batch())
+                .await
+                .is_err()
+        );
+    }
+    let mut duplicate = model_batch();
+    duplicate[1].id = duplicate[0].id.clone();
+    assert!(
+        client
+            .execute_tool_batch(Uuid::new_v4(), duplicate)
+            .await
+            .is_err()
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 5);
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
     drop(shutdown);
 }
 
