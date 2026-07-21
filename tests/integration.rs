@@ -16,6 +16,10 @@
 //! * bearer header is forwarded
 
 use std::net::SocketAddr;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
 use axum::{
     Json, Router,
@@ -79,6 +83,8 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
         authorization: fixture["authorization"].clone(),
         verifying_key: *signing_key.verifying_key(),
     };
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
     let app = Router::new()
         .route(
             "/mcp",
@@ -113,7 +119,7 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
                     assert_eq!(receipt["stage"], "execution.completed");
                     assert_eq!(
                         receipt["result_sha256"],
-                        "sha256:4062edaf750fb8074e7e83e0c9028c94e32468a8b6f1614774328ef045150f93"
+                        "sha256:0e7557119350c8bbaee392bf4b64ba8dfe63cae8555ec686bd4937d2e0c3c7f7"
                     );
                     let signature = receipt["workload_signature"]["value"].as_str().unwrap();
                     let signature = general_purpose::URL_SAFE_NO_PAD.decode(signature).unwrap();
@@ -150,25 +156,151 @@ async fn execute_tool_authorizes_exact_payload_and_signs_terminal_receipt() {
     let client = ClavenarClient::builder(&url)
         .unwrap()
         .execution_signing_key(signing_key)
+        .tool_executor(move |payload| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                assert_eq!(payload["params"]["arguments"]["amount"], 100);
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: json!({"ok": true, "source": "registered-executor"}),
+                    effect_id: "provider-operation-123".into(),
+                })
+            }
+        })
         .build()
         .unwrap();
+    let idempotency_id = Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap();
+    client
+        .authorize_tool(idempotency_id, "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap();
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+
     let outcome = client
-        .execute_tool(
-            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
-            "payments.transfer",
-            json!({"amount": 100}),
-            |payload| async move {
-                assert_eq!(payload["params"]["arguments"]["amount"], 100);
+        .clone()
+        .execute_tool(idempotency_id, "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap();
+    assert_eq!(
+        outcome.result,
+        json!({"ok": true, "source": "registered-executor"})
+    );
+    assert_eq!(outcome.effect_id, "provider-operation-123");
+    assert_eq!(outcome.receipt.stage, "execution.completed");
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn governed_execution_requires_registered_executor_before_network() {
+    let requests = Arc::new(AtomicUsize::new(0));
+    let server_requests = Arc::clone(&requests);
+    let app = Router::new().route(
+        "/mcp",
+        post(move || {
+            let requests = Arc::clone(&server_requests);
+            async move {
+                requests.fetch_add(1, Ordering::SeqCst);
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }),
+    );
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .build()
+        .unwrap();
+    let error = client
+        .execute_tool(Uuid::new_v4(), "payments.transfer", json!({"amount": 100}))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(error, ClavenarError::InvalidConfig(message) if message.contains("tool_executor"))
+    );
+    assert_eq!(requests.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn denied_authorization_never_invokes_registered_executor() {
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let app = Router::new().route("/mcp", post(|| async { (StatusCode::FORBIDDEN, "denied") }));
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .tool_executor(move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
+                Ok(ExecutionEffect {
+                    result: json!({"unexpected": true}),
+                    effect_id: "unexpected".into(),
+                })
+            }
+        })
+        .build()
+        .unwrap();
+    assert!(
+        client
+            .execute_tool(Uuid::new_v4(), "payments.transfer", json!({"amount": 100}))
+            .await
+            .is_err()
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 0);
+    drop(shutdown);
+}
+
+#[tokio::test]
+async fn receipt_failure_does_not_report_governed_execution_success() {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../contracts/execution-receipt-v1.fixture.json"
+    ))
+    .unwrap();
+    let effects = Arc::new(AtomicUsize::new(0));
+    let executor_effects = Arc::clone(&effects);
+    let app = Router::new()
+        .route(
+            "/mcp",
+            post(move || {
+                let authorization = fixture["authorization"].clone();
+                async move { (StatusCode::OK, Json(authorization)) }
+            }),
+        )
+        .route(
+            "/execution-receipts",
+            post(|| async { (StatusCode::SERVICE_UNAVAILABLE, "receipt unavailable") }),
+        );
+    let (url, shutdown) = spawn(app).await;
+    let client = ClavenarClient::builder(&url)
+        .unwrap()
+        .execution_signing_key(p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap())
+        .tool_executor(move |_| {
+            let effects = Arc::clone(&executor_effects);
+            async move {
+                effects.fetch_add(1, Ordering::SeqCst);
                 Ok(ExecutionEffect {
                     result: json!({"ok": true}),
                     effect_id: "provider-operation-123".into(),
                 })
-            },
+            }
+        })
+        .build()
+        .unwrap();
+    let error = client
+        .execute_tool(
+            Uuid::parse_str("cfcc8767-4c73-41cc-8ece-b855863924c4").unwrap(),
+            "payments.transfer",
+            json!({"amount": 100}),
         )
         .await
-        .unwrap();
-    assert_eq!(outcome.result, json!({"ok": true}));
-    assert_eq!(outcome.receipt.stage, "execution.completed");
+        .unwrap_err();
+    assert!(
+        matches!(error, ClavenarError::Server { status, .. } if status == StatusCode::SERVICE_UNAVAILABLE)
+    );
+    assert_eq!(effects.load(Ordering::SeqCst), 1);
     drop(shutdown);
 }
 

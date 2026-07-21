@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "feature": "WP-06.1",
+  "contract": "clavenar.sdk-execution-authority/v1",
+  "executionWireContract": "clavenar.execution/v1",
+  "governedExecutor": {
+    "authority": "sdk-only",
+    "registration": "client-construction",
+    "cloneSemantics": "shared-callback",
+    "perCallInjectionAllowed": false
+  },
+  "ordering": [
+    "require-registered-executor",
+    "require-workload-signing-key",
+    "request-side-effect-free-authorization",
+    "validate-exact-signed-payload",
+    "invoke-registered-executor",
+    "hash-actual-result",
+    "sign-terminal-receipt",
+    "persist-terminal-receipt",
+    "return-actual-result"
+  ],
+  "effectInvariants": {
+    "authorizationEffects": 0,
+    "sdkExecutorEffects": 1,
+    "proxyExecutionAllowed": false,
+    "receiptPersistenceRequiredForSuccess": true
+  },
+  "executorInput": [
+    "exact-authorized-execution-payload"
+  ],
+  "callerOutput": [
+    "actual-result",
+    "effect-id",
+    "terminal-receipt-metadata"
+  ],
+  "callerOutputForbidden": [
+    "signed-authorization",
+    "execution-payload",
+    "host-executable-tool-call"
+  ],
+  "failBeforeExecutor": [
+    "missing-executor",
+    "missing-signing-key",
+    "authorization-denied",
+    "authorization-review",
+    "authorization-invalid"
+  ],
+  "failAfterEffectWithoutSuccess": [
+    "invalid-effect-id",
+    "receipt-signing-failure",
+    "receipt-persistence-failure"
+  ],
+  "retainedFeatures": [
+    "WP-06.2",
+    "WP-06.3",
+    "WP-06.4",
+    "WP-06.5",
+    "WP-06.6",
+    "WP-06.7",
+    "WP-06.8",
+    "WP-06.9",
+    "WP-06.10",
+    "WP-06.11"
+  ]
+}
+

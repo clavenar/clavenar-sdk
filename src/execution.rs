@@ -1,12 +1,12 @@
 //! SDK-governed execution contract.
 //!
 //! Proxy authorizes an exact, canonical JSON-RPC payload without invoking the
-//! upstream. The SDK invokes the supplied executor with those signed bytes,
+//! upstream. The SDK invokes its registered executor with those signed bytes,
 //! then signs and submits a terminal receipt with the private P-256 key for
 //! the same mTLS SVID. Batching, uncertain-effect recovery, automatic retry,
 //! and non-Rust SDK parity remain part of the later executor migration.
 
-use std::future::Future;
+use std::{fmt, future::Future, pin::Pin, sync::Arc};
 
 use base64::{Engine as _, engine::general_purpose};
 use p256::ecdsa::{Signature, signature::Signer as _};
@@ -18,9 +18,42 @@ use uuid::Uuid;
 
 use crate::{Auth, ClavenarClient, ClavenarError};
 
+type ToolExecutorFuture =
+    Pin<Box<dyn Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static>>;
+type ToolExecutorCallback = dyn Fn(Value) -> ToolExecutorFuture + Send + Sync + 'static;
+
+#[derive(Clone)]
+pub(crate) struct RegisteredToolExecutor {
+    callback: Arc<ToolExecutorCallback>,
+}
+
+impl RegisteredToolExecutor {
+    pub(crate) fn new<F, Fut>(executor: F) -> Self
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+    {
+        Self {
+            callback: Arc::new(move |payload| Box::pin(executor(payload))),
+        }
+    }
+
+    async fn execute(&self, payload: Value) -> Result<ExecutionEffect, ClavenarError> {
+        (self.callback)(payload).await
+    }
+}
+
+impl fmt::Debug for RegisteredToolExecutor {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("RegisteredToolExecutor")
+    }
+}
+
 pub const EXECUTION_CONTRACT: &str = "clavenar.execution/v1";
 pub const EXECUTION_CONTRACT_HEADER: &str = "x-clavenar-execution-contract";
 pub const IDEMPOTENCY_ID_HEADER: &str = "x-clavenar-idempotency-id";
+pub const SDK_EXECUTION_AUTHORITY_CONTRACT: &str =
+    include_str!("../contracts/sdk-execution-authority-v1.json");
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -134,7 +167,6 @@ pub struct ReceiptRecorded {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExecutionOutcome {
-    pub authorization: SignedAuthorization,
     pub receipt: ReceiptRecorded,
     pub result: Value,
     pub effect_id: String,
@@ -180,29 +212,33 @@ impl ClavenarClient {
         Ok(authorization)
     }
 
-    /// Authorize, execute, and record one exact tool effect.
+    /// Authorize, execute through the registered executor, and record one
+    /// exact tool effect.
     ///
-    /// The executor receives the complete signed JSON-RPC value, including
-    /// any HIL modification. Proxy never executes this mode. If the executor
-    /// returns an error, no completion receipt is claimed.
-    pub async fn execute_tool<F, Fut>(
+    /// The registered executor receives the complete authorized JSON-RPC
+    /// value, including any HIL modification. Proxy never executes this mode,
+    /// and the authorized payload is not returned to the caller. If execution
+    /// or receipt recording fails, successful completion is not reported.
+    pub async fn execute_tool(
         &self,
         idempotency_id: Uuid,
         name: &str,
         arguments: Value,
-        executor: F,
-    ) -> Result<ExecutionOutcome, ClavenarError>
-    where
-        F: FnOnce(Value) -> Fut,
-        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>>,
-    {
+    ) -> Result<ExecutionOutcome, ClavenarError> {
+        let executor = self.tool_executor.as_ref().ok_or_else(|| {
+            ClavenarError::InvalidConfig(
+                "tool_executor is required for SDK-governed execution".into(),
+            )
+        })?;
         let signing_key = self.execution_signing_key.as_ref().ok_or_else(|| {
             ClavenarError::InvalidConfig(
                 "execution_signing_key is required for SDK-governed execution".into(),
             )
         })?;
         let authorization = self.authorize_tool(idempotency_id, name, arguments).await?;
-        let effect = executor(authorization.authorization.execution_payload.clone()).await?;
+        let effect = executor
+            .execute(authorization.authorization.execution_payload.clone())
+            .await?;
         if effect.effect_id.is_empty() || effect.effect_id.len() > 256 {
             return Err(ClavenarError::InvalidConfig(
                 "execution effect_id must contain 1..=256 characters".into(),
@@ -251,7 +287,6 @@ impl ClavenarClient {
         };
         let recorded = self.record_receipt(&receipt).await?;
         Ok(ExecutionOutcome {
-            authorization,
             receipt: recorded,
             result: effect.result,
             effect_id: effect.effect_id,
@@ -384,5 +419,20 @@ mod tests {
         let fixture: Value = serde_json::from_slice(fixture).unwrap();
         serde_json::from_value::<SignedAuthorization>(fixture["authorization"].clone()).unwrap();
         serde_json::from_value::<ExecutionReceipt>(fixture["receipt"].clone()).unwrap();
+    }
+
+    #[test]
+    fn sdk_execution_authority_contract_is_embedded_and_strict() {
+        let contract: Value = serde_json::from_str(SDK_EXECUTION_AUTHORITY_CONTRACT).unwrap();
+        assert_eq!(contract["schemaVersion"], 1);
+        assert_eq!(contract["feature"], "WP-06.1");
+        assert_eq!(contract["governedExecutor"]["authority"], "sdk-only");
+        assert_eq!(contract["effectInvariants"]["authorizationEffects"], 0);
+        assert_eq!(contract["effectInvariants"]["sdkExecutorEffects"], 1);
+        assert_eq!(
+            contract["effectInvariants"]["receiptPersistenceRequiredForSuccess"],
+            true
+        );
+        assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 10);
     }
 }

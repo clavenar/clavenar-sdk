@@ -13,6 +13,19 @@ at that version".
   `X-Clavenar-Operator` audit value, plus a configurable positive request
   deadline (twenty seconds by default) on simulator reads and writes.
 
+### Changed
+
+- SDK-governed `execute_tool` now invokes one clone-shared executor registered
+  through `ClavenarClientBuilder::tool_executor`. Per-call executor injection
+  was removed, and `ExecutionOutcome` returns the actual result, effect ID, and
+  terminal receipt metadata without executable authorization bytes.
+
+### Security
+
+- Missing executor configuration fails before authorization. Denied or invalid
+  authorization never reaches the executor, and receipt persistence failure
+  cannot report successful governed execution.
+
 ## [0.2.0]
 
 ### Added

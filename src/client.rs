@@ -9,6 +9,7 @@
 //! * [`ClavenarClient::send_jsonrpc`] — escape hatch for non-tool
 //!   methods (`tools/list`, etc.). Same return semantics.
 
+use std::future::Future;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -17,6 +18,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::ClavenarError;
+use crate::ExecutionEffect;
+use crate::execution::RegisteredToolExecutor;
 use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
 
 /// Authentication mode for the proxy.
@@ -46,6 +49,7 @@ pub struct ClavenarClient {
     pub(crate) http: Arc<dyn HttpProvider>,
     next_id: Arc<AtomicU64>,
     pub(crate) execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
+    pub(crate) tool_executor: Option<RegisteredToolExecutor>,
 }
 
 /// Two-step builder: validate the URL once, then attach optional
@@ -57,6 +61,7 @@ pub struct ClavenarClientBuilder {
     auth: Auth,
     http: Option<Arc<dyn HttpProvider>>,
     execution_signing_key: Option<Arc<p256::ecdsa::SigningKey>>,
+    tool_executor: Option<RegisteredToolExecutor>,
 }
 
 impl ClavenarClient {
@@ -72,6 +77,7 @@ impl ClavenarClient {
             auth: Auth::None,
             http: None,
             execution_signing_key: None,
+            tool_executor: None,
         })
     }
 
@@ -173,6 +179,17 @@ impl ClavenarClientBuilder {
         self
     }
 
+    /// Register the sole callback permitted to execute SDK-governed tool
+    /// authorizations. Client clones share this callback.
+    pub fn tool_executor<F, Fut>(mut self, executor: F) -> Self
+    where
+        F: Fn(Value) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ExecutionEffect, ClavenarError>> + Send + 'static,
+    {
+        self.tool_executor = Some(RegisteredToolExecutor::new(executor));
+        self
+    }
+
     /// Construct the client. Builds a default `reqwest::Client` if
     /// neither `http_client(...)` nor `http_provider(...)` was called.
     pub fn build(self) -> Result<ClavenarClient, ClavenarError> {
@@ -186,6 +203,7 @@ impl ClavenarClientBuilder {
             http,
             next_id: Arc::new(AtomicU64::new(1)),
             execution_signing_key: self.execution_signing_key,
+            tool_executor: self.tool_executor,
         })
     }
 }

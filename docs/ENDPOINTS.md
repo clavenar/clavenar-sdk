@@ -29,7 +29,7 @@ conflict, typed-error lift), see [`SEQUENCES.md`](./SEQUENCES.md).
 |---|---|---|
 | `call_tool(name, arguments)` | `POST /mcp` — JSON-RPC `tools/call` body | `serde_json::Value` |
 | `authorize_tool(idempotency_id, name, arguments)` | `POST /mcp` with `clavenar.execution/v1` headers; side-effect-free | `SignedAuthorization` |
-| `execute_tool(idempotency_id, name, arguments, executor)` | authorize exact payload, invoke caller executor, `POST /execution-receipts` | `ExecutionOutcome` |
+| `execute_tool(idempotency_id, name, arguments)` | authorize exact payload, invoke the builder-registered executor, `POST /execution-receipts` | actual-result `ExecutionOutcome` without executable authorization bytes |
 | `send_jsonrpc(method, params)` | `POST /mcp` — arbitrary JSON-RPC body | `serde_json::Value` |
 
 Owns its own dispatch (not `decode_response`): `200` → `Value`, `403` →

@@ -106,6 +106,41 @@ sequenceDiagram
   replaces the last segment) and silently drops the prefix.
   Every per-service client routes through `parse_base_url`.
 
+### 1a. `ClavenarClient::execute_tool` — registered SDK authority
+
+The SDK-governed convenience path requires one executor callback and the
+workload receipt-signing key at construction. It authorizes without an upstream
+effect, invokes the clone-shared callback with the exact signed payload, records
+the terminal receipt, and returns the callback's actual result. The executable
+authorization is not part of `ExecutionOutcome`.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Caller
+    participant SDK as ClavenarClient::execute_tool
+    participant Proxy
+    participant Executor as registered tool executor
+    participant Ledger
+
+    Caller->>SDK: execute_tool(idempotency_id, name, arguments)
+    SDK-->>SDK: require registered executor + workload signing key
+    SDK->>Proxy: side-effect-free clavenar.execution/v1 authorization
+    Proxy-->>SDK: Identity-signed exact execution payload
+    SDK->>Executor: invoke(exact authorized payload)
+    Executor-->>SDK: actual result + effect ID
+    SDK-->>SDK: hash actual result; sign terminal receipt
+    SDK->>Proxy: POST /execution-receipts
+    Proxy->>Ledger: commit execution.completed
+    Ledger-->>Proxy: recorded
+    Proxy-->>SDK: non-executable receipt metadata
+    SDK-->>Caller: actual result + effect ID + receipt metadata
+```
+
+Missing configuration fails before the authorization request. A deny or invalid
+authorization never invokes the executor. Receipt failure returns an error and
+does not report governed execution success.
+
 ---
 
 ## 2. `LedgerClient` — audit fetch and verify

@@ -69,7 +69,8 @@ pub use error::ClavenarError;
 pub use execution::{
     Authorization, EXECUTION_CONTRACT, EXECUTION_CONTRACT_HEADER, ExecutionEffect,
     ExecutionOutcome, ExecutionReceipt, IDEMPOTENCY_ID_HEADER, IdentitySignature,
-    PolicyBundleProvenance, ReceiptRecorded, SignedAuthorization, WorkloadSignature,
+    PolicyBundleProvenance, ReceiptRecorded, SDK_EXECUTION_AUTHORITY_CONTRACT, SignedAuthorization,
+    WorkloadSignature,
 };
 pub use hil::{
     ApprovalStats, ApproverStat, ArgumentScalarReplacement, AuthProxyResponse, ChannelStatus,

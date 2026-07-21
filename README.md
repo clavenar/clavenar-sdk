@@ -75,7 +75,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 `execute_tool` selects `clavenar.execution/v1`: Proxy runs its complete
 security/HIL pipeline and signs the exact canonical payload, but performs no
 upstream effect. The SDK passes that signed payload to your executor, signs a
-terminal receipt, and waits for the receipt's synchronous Ledger commit.
+terminal receipt, and waits for the receipt's synchronous Ledger commit. The
+executor is registered when the client is built and shared by client clones;
+the governed call never returns an executable payload to a host tool loop.
+The exact invariant set is
+[`contracts/sdk-execution-authority-v1.json`](contracts/sdk-execution-authority-v1.json).
 
 Build the injected `reqwest::Client` with the current workload SVID, and pass
 the matching P-256 private key through `execution_signing_key`. Proxy verifies
@@ -91,21 +95,22 @@ use uuid::Uuid;
 let client = ClavenarClient::builder("https://proxy:8443")?
     .http_client(mtls_client)
     .execution_signing_key(svid_key)
-    .build()?;
-let outcome = client.execute_tool(
-    Uuid::new_v4(),
-    "payments.transfer",
-    json!({"amount": 100}),
-    |signed_jsonrpc| async move {
-        // Invoke the tool using exactly signed_jsonrpc; this is the sole
-        // side-effecting step in the v1 SDK-governed path.
+    .tool_executor(|signed_jsonrpc| async move {
+        // Invoke the tool using exactly signed_jsonrpc; this registered
+        // callback is the sole side-effecting step in the governed path.
         let _ = signed_jsonrpc;
         Ok(ExecutionEffect {
             result: json!({"ok": true}),
             effect_id: "provider-operation-123".into(),
         })
-    },
+    })
+    .build()?;
+let outcome = client.execute_tool(
+    Uuid::new_v4(),
+    "payments.transfer",
+    json!({"amount": 100}),
 ).await?;
+assert_eq!(outcome.result, json!({"ok": true}));
 assert_eq!(outcome.receipt.stage, "execution.completed");
 # Ok(()) }
 ```
