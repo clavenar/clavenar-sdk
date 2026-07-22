@@ -222,6 +222,10 @@ pub const PENDING_AUTHORIZATION_CONTRACT_DOCUMENT: &str =
     include_str!("../contracts/pending-authorization-v1.json");
 pub const UNCERTAIN_EFFECT_RECONCILIATION_CONTRACT: &str =
     include_str!("../contracts/uncertain-effect-reconciliation-v1.json");
+pub const CLIENT_MIGRATION_CONTRACT: &str =
+    include_str!("../contracts/client-migration-v1.fixture.json");
+pub const CLIENT_MIGRATION_SCHEMA: &str =
+    include_str!("../contracts/client-migration-v1.schema.json");
 pub const DURABLE_EXECUTION_OUTBOX_WIRE_CONTRACT: &str = "clavenar.sdk-durable-intent-outbox/v1";
 pub const UNCERTAIN_EFFECT_CONTRACT: &str = "clavenar.uncertain-effect/v1";
 
@@ -1713,6 +1717,24 @@ mod tests {
             4
         );
         assert_eq!(contract["retainedFeatures"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn client_migration_contract_is_embedded_and_strict() {
+        let contract: Value = serde_json::from_str(CLIENT_MIGRATION_CONTRACT).unwrap();
+        let schema: Value = serde_json::from_str(CLIENT_MIGRATION_SCHEMA).unwrap();
+        assert_eq!(contract["contract"], "clavenar.client-migration/v1");
+        assert_eq!(contract["minimumSafeVersions"]["rust"], "0.3.0");
+        assert_eq!(contract["legacyRejection"]["httpStatus"], 426);
+        assert_eq!(contract["legacyRejection"]["toolEffectCount"], 0);
+        assert_eq!(
+            contract["invariants"]["legacyInspectionCannotExecute"],
+            true
+        );
+        assert_eq!(
+            schema["properties"]["contract"]["const"],
+            contract["contract"]
+        );
     }
 
     #[test]

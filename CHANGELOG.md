@@ -7,6 +7,12 @@ at that version".
 
 ## [Unreleased]
 
+## [0.3.0]
+
+- Embed the exact `clavenar.client-migration/v1` fixture and schema, document
+  the client-first explicit-selector rollout, and retain side-effect-free
+  decision selection with a canonical pre-network request ID.
+
 ### Added
 
 - `reconciling_tool_executor` registers both an idempotent executor and its

@@ -100,11 +100,10 @@ The exact invariant set is
 [`contracts/sdk-execution-authority-v1.json`](contracts/sdk-execution-authority-v1.json).
 The selector/server-execution separation is fixed by
 [`contracts/side-effect-free-decision-v1.json`](contracts/side-effect-free-decision-v1.json):
-ordinary `/mcp` remains the legacy server-executed compatibility path only when
-decision headers are absent. Lite rejects decision selectors before upstream
-access because it does not issue SDK authorizations; it does expose the shared
-pending lifecycle contract for its durable server-execution review queue. The
-SDK never falls back to unselected `/mcp` after a decision request.
+the SDK always selects the side-effect-free decision route and never falls back
+to unselected `/mcp`. Proxy 0.5.0 and Lite 0.9.0 reject unselected tool calls
+with HTTP 426 before effects. Follow the public migration guide at
+<https://clavenar.com/docs/sdk-migration/> before upgrading a gateway.
 
 Model siblings use `execute_tool_batch`. It commits the complete ordered batch
 under [`clavenar.atomic-tool-call-batch/v1`](contracts/atomic-tool-call-batch-v1.json)
