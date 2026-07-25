@@ -89,6 +89,7 @@ reconciliation uses only a lookup registered through
 | `finops_spend(window, tenant, limit)` | `GET /finops/spend?limit=[&window=&tenant=]` | `SpendRollup` (`tenant` `None` → deployment-wide rollup) |
 | `compliance_evidence(from, to)` | `POST /compliance/evidence?from=&to=` | `ComplianceRegister` |
 | `regulatory_export(from, to, opts)` | `POST /export/regulatory?from=&to=[&include_exports=true][&include_compliance=true]` | `Vec<u8>` (raw `.tar.gz` bytes) |
+| `tenant_lifecycle(tenant, operation_id, kind)` | `POST /admin/tenants/{tenant}/lifecycle` | `LedgerTenantLifecycleReceipt` |
 | `create_case(title, agent_ids, correlation_ids, actor)` | `POST /cases` | `CaseRecord` |
 | `list_cases(status, limit)` | `GET /cases?limit=[&status=]` | `Vec<CaseRecord>` |
 | `get_case(id)` | `GET /cases/{id}` | `CaseDetail` |

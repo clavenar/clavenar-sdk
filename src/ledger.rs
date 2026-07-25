@@ -336,6 +336,33 @@ pub struct RegulatoryExportOptions {
     pub include_compliance: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LedgerTenantLifecycleKind {
+    FinalExport,
+    Tombstone,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LedgerTenantLifecycleReceipt {
+    pub tenant: String,
+    pub operation_id: Uuid,
+    pub kind: LedgerTenantLifecycleKind,
+    pub state: String,
+    pub generation: i64,
+    pub rows_affected: i64,
+    pub artifact_sha256: Option<String>,
+    pub artifact_bytes: Option<usize>,
+    pub receipt_sha256: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+struct LedgerTenantLifecycleRequest {
+    operation_id: Uuid,
+    kind: LedgerTenantLifecycleKind,
+}
+
 /// Optional tenant scope for [`LedgerClient::compliance_evidence_scoped`].
 #[derive(Debug, Clone, Default)]
 pub struct ComplianceEvidenceScope {
@@ -1685,6 +1712,22 @@ impl LedgerClient {
         .await
     }
 
+    /// Execute one durable Ledger owner step in the tenant lifecycle saga.
+    /// `FinalExport` retains a signed full-history bundle; `Tombstone`
+    /// atomically hides live tenant rows. Replays return the exact receipt.
+    pub async fn tenant_lifecycle(
+        &self,
+        tenant: &str,
+        operation_id: Uuid,
+        kind: LedgerTenantLifecycleKind,
+    ) -> Result<LedgerTenantLifecycleReceipt, ClavenarError> {
+        self.post_json(
+            &format!("admin/tenants/{}/lifecycle", percent_encode(tenant)),
+            &LedgerTenantLifecycleRequest { operation_id, kind },
+        )
+        .await
+    }
+
     /// `POST /admin/tenants/{tenant}/tombstone` — logically erase a
     /// tenant's audit rows (Phase 7 offboarding). Sets `deleted_at` on
     /// every live row whose `tenant` matches, hiding them from all reads
@@ -2821,5 +2864,36 @@ mod tests {
         );
         assert_eq!(q.get("tenant").map(String::as_str), Some("acme"));
         let _ = kill_tx.send(());
+    }
+
+    #[test]
+    fn tenant_lifecycle_wire_contract_round_trips() {
+        let operation_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let request = LedgerTenantLifecycleRequest {
+            operation_id,
+            kind: LedgerTenantLifecycleKind::FinalExport,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "operation_id": operation_id,
+                "kind": "final_export",
+            })
+        );
+        let receipt: LedgerTenantLifecycleReceipt = serde_json::from_value(serde_json::json!({
+            "tenant": "acme",
+            "operation_id": operation_id,
+            "kind": "final_export",
+            "state": "exported",
+            "generation": 1,
+            "rows_affected": 42,
+            "artifact_sha256": "digest",
+            "artifact_bytes": 1024,
+            "receipt_sha256": "receipt",
+            "updated_at": "2026-07-25T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(receipt.rows_affected, 42);
+        assert_eq!(receipt.artifact_bytes, Some(1024));
     }
 }
