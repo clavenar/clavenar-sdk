@@ -105,6 +105,25 @@ impl PendingStatus {
     }
 }
 
+/// Purpose- and tier-specific retention boundary attached to every current
+/// HIL row. Exact `request_payload` JSON is returned only while
+/// `payload_availability == "available"`; expired rows carry the bounded
+/// minimized projection instead.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct HilRetentionMetadata {
+    pub retention_policy: String,
+    pub retention_purpose: String,
+    pub retention_tier: String,
+    pub payload_protection: String,
+    pub payload_key_id: String,
+    pub protected_at: DateTime<Utc>,
+    pub payload_retention_expires_at: DateTime<Utc>,
+    pub metadata_retention_expires_at: DateTime<Utc>,
+    pub payload_availability: String,
+    pub minimization_profile: String,
+    pub minimized_payload: serde_json::Value,
+}
+
 /// One row from `GET /pending`. Mirror of `clavenar_hil::PendingRequest`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PendingRequest {
@@ -218,6 +237,11 @@ pub struct PendingRequest {
     /// single-tenant deployments.
     #[serde(default)]
     pub tenant: Option<String>,
+    /// Present on HIL servers implementing `clavenar.hil-retention/v1`.
+    /// Optional here so the SDK remains able to read historical/older server
+    /// fixtures during rolling upgrades.
+    #[serde(default)]
+    pub retention: Option<HilRetentionMetadata>,
 }
 
 /// Decision body sent to `POST /decide/{id}`. Mirror of
