@@ -118,8 +118,9 @@ pub use policies::{
     EvaluateBatchError, EvaluateBatchRequest, EvaluateBatchResponse, InstallTemplateRequest,
     LabTemplateRequest, MineCandidate, MineError, MineFlippedExample, MineLabReplay, MineRequest,
     MineResponse, MutationResponse, PoliciesClient, PoliciesListResponse, PolicyDetail,
-    PolicyInputJson, PolicyRow, PolicyTemplate, PolicyTemplateDetail, PolicyVersionRow,
-    RollbackRequest, StateChangeRequest, UpdatePolicyRequest, ValidatePolicyRequest,
-    ValidatePolicyResponse, VersionsListResponse, parse_batch_error, parse_mine_error,
+    PolicyInputJson, PolicyRow, PolicyTemplate, PolicyTemplateDetail, PolicyTenantLifecycleKind,
+    PolicyTenantLifecycleReceipt, PolicyVersionRow, RollbackRequest, StateChangeRequest,
+    UpdatePolicyRequest, ValidatePolicyRequest, ValidatePolicyResponse, VersionsListResponse,
+    parse_batch_error, parse_mine_error,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};

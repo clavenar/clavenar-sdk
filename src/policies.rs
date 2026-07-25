@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 
 use crate::ClavenarError;
 use crate::http::{
@@ -456,6 +457,31 @@ pub struct LabTemplateRequest {
     pub inputs: Vec<PolicyInputJson>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PolicyTenantLifecycleKind {
+    Provision,
+    Offboard,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PolicyTenantLifecycleReceipt {
+    pub tenant: String,
+    pub operation_id: Uuid,
+    pub kind: PolicyTenantLifecycleKind,
+    pub state: String,
+    pub generation: i64,
+    pub policies: usize,
+    pub receipt_sha256: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+struct PolicyTenantLifecycleRequest {
+    operation_id: Uuid,
+    kind: PolicyTenantLifecycleKind,
+}
+
 // ── Client ────────────────────────────────────────────────────────────
 
 /// Cheap to clone — the inner `reqwest::Client` is `Arc`-based, same
@@ -526,6 +552,32 @@ impl PoliciesClient {
     pub fn with_tenant(mut self, tenant: Option<String>) -> Self {
         self.tenant = tenant;
         self
+    }
+
+    /// Execute the policy-engine owner step for a durable tenant lifecycle
+    /// operation. Repeating the operation UUID returns its exact stored
+    /// receipt.
+    pub async fn tenant_lifecycle(
+        &self,
+        tenant: &str,
+        operation_id: Uuid,
+        kind: PolicyTenantLifecycleKind,
+    ) -> Result<PolicyTenantLifecycleReceipt, ClavenarError> {
+        let url = self
+            .base_url
+            .join(&format!(
+                "admin/tenants/{}/lifecycle",
+                percent_encode(tenant)
+            ))
+            .map_err(|error| {
+                ClavenarError::InvalidConfig(format!("join policy lifecycle: {error}"))
+            })?;
+        self.send_json(
+            reqwest::Method::POST,
+            url,
+            &PolicyTenantLifecycleRequest { operation_id, kind },
+        )
+        .await
     }
 
     /// `POST /policies/tenant/{prefix}/provision` — idempotently create a
@@ -893,6 +945,35 @@ mod tests {
         // An untenanted client adds nothing.
         let c2 = PoliciesClient::new("http://localhost:8082").unwrap();
         assert!(c2.join("policies").unwrap().query().is_none());
+    }
+
+    #[test]
+    fn tenant_lifecycle_wire_contract_round_trips() {
+        let operation_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let request = PolicyTenantLifecycleRequest {
+            operation_id,
+            kind: PolicyTenantLifecycleKind::Offboard,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "operation_id": operation_id,
+                "kind": "offboard",
+            })
+        );
+        let receipt: PolicyTenantLifecycleReceipt = serde_json::from_value(serde_json::json!({
+            "tenant": "acme",
+            "operation_id": operation_id,
+            "kind": "offboard",
+            "state": "offboarded",
+            "generation": 3,
+            "policies": 1,
+            "receipt_sha256": "receipt",
+            "updated_at": "2026-07-25T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(receipt.operation_id, operation_id);
+        assert_eq!(receipt.policies, 1);
     }
 
     #[test]

@@ -158,6 +158,7 @@ network call.
 | `list_versions(name)` | `GET /policies/{name}/versions` | `Vec<PolicyVersionRow>` (unwraps `{ versions }`) |
 | `get_version(name, version)` | `GET /policies/{name}/versions/{n}` | `PolicyVersionRow` |
 | `diff(name, from, to)` | `GET /policies/{name}/diff?from=&to=` | `DiffResponse` |
+| `tenant_lifecycle(tenant, operation_id, kind)` | `POST /admin/tenants/{tenant}/lifecycle` | `PolicyTenantLifecycleReceipt` |
 | `create(req)` | `POST /policies` | `MutationResponse` |
 | `validate(req)` | `POST /policies/validate` | `ValidatePolicyResponse` |
 | `update(name, req)` | `PUT /policies/{name}` | `MutationResponse` |
