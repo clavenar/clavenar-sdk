@@ -410,6 +410,9 @@ pub struct ComplianceRegister {
 /// policy context.
 #[derive(Debug, Clone, Serialize)]
 pub struct LogEntry {
+    /// Exact persisted-state owner. New callers must choose `operator` or
+    /// `demo`; the ledger rejects every other value.
+    pub state_namespace: String,
     pub agent_id: String,
     pub method: String,
     pub intent_category: String,
