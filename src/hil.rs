@@ -368,6 +368,12 @@ pub struct HilTenantLifecycleReceipt {
     pub state: String,
     pub generation: i64,
     pub pending_denied: i64,
+    #[serde(default)]
+    pub rows_erased: i64,
+    #[serde(default)]
+    pub rows_held: i64,
+    #[serde(default)]
+    pub deletion_audits: i64,
     pub receipt_sha256: String,
     pub updated_at: String,
 }
@@ -376,6 +382,36 @@ pub struct HilTenantLifecycleReceipt {
 struct HilTenantLifecycleRequest {
     operation_id: Uuid,
     kind: HilTenantLifecycleKind,
+}
+
+/// Tenant-authorized legal-hold mutation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HilLegalHoldAction {
+    Apply,
+    Release,
+}
+
+/// Durable receipt for an idempotent HIL legal-hold operation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HilLegalHoldReceipt {
+    pub contract: String,
+    pub operation_id: Uuid,
+    pub action: HilLegalHoldAction,
+    pub hold_id: Uuid,
+    pub state: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deletion_disposition: Option<String>,
+    pub receipt_sha256: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+struct HilLegalHoldRequest<'a> {
+    operation_id: Uuid,
+    action: HilLegalHoldAction,
+    hold_id: Uuid,
+    authority_reason_sha256: &'a str,
 }
 
 /// Async client for the HIL service.
@@ -456,6 +492,32 @@ impl HilClient {
             percent_encode(tenant)
         ))?;
         let request = HilTenantLifecycleRequest { operation_id, kind };
+        let response = self
+            .apply_tenant_scope(self.http.client().post(url))
+            .json(&request)
+            .send()
+            .await?;
+        read_json(response).await
+    }
+
+    /// Apply or release a tenant-scoped legal hold. The reason parameter must
+    /// be a canonical `sha256:<lower-hex>` commitment; raw reasons are never
+    /// accepted by the service.
+    pub async fn legal_hold(
+        &self,
+        pending_id: Uuid,
+        operation_id: Uuid,
+        action: HilLegalHoldAction,
+        hold_id: Uuid,
+        authority_reason_sha256: &str,
+    ) -> Result<HilLegalHoldReceipt, ClavenarError> {
+        let url = self.join(&format!("admin/pending/{pending_id}/legal-hold"))?;
+        let request = HilLegalHoldRequest {
+            operation_id,
+            action,
+            hold_id,
+            authority_reason_sha256,
+        };
         let response = self
             .apply_tenant_scope(self.http.client().post(url))
             .json(&request)
@@ -1252,11 +1314,37 @@ mod tests {
             "state": "offboarded",
             "generation": 2,
             "pending_denied": 3,
+            "rows_erased": 2,
+            "rows_held": 1,
+            "deletion_audits": 2,
             "receipt_sha256": "sha256:receipt",
             "updated_at": "2026-07-25T00:00:00Z",
         }))
         .unwrap();
         assert_eq!(receipt.operation_id, operation_id);
         assert_eq!(receipt.pending_denied, 3);
+        assert_eq!(receipt.rows_erased, 2);
+        assert_eq!(receipt.rows_held, 1);
+    }
+
+    #[test]
+    fn hil_legal_hold_wire_contract_uses_commitment_only() {
+        let operation_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let hold_id = Uuid::parse_str("cb160fcc-ec2f-4cfe-8022-6bc1db2efe06").unwrap();
+        let request = HilLegalHoldRequest {
+            operation_id,
+            action: HilLegalHoldAction::Release,
+            hold_id,
+            authority_reason_sha256: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        };
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["action"], "release");
+        assert!(value.get("reason").is_none());
+        assert!(
+            value["authority_reason_sha256"]
+                .as_str()
+                .unwrap()
+                .starts_with("sha256:")
+        );
     }
 }
