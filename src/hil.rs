@@ -17,7 +17,9 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::ClavenarError;
-use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
+use crate::http::{
+    HttpProvider, StaticHttpClient, default_provider, parse_base_url, percent_encode,
+};
 
 /// Cookie name HIL's WebAuthn middleware reads on `/decide/{id}`.
 pub const HIL_SESSION_COOKIE: &str = "clavenar_hil_session";
@@ -325,6 +327,33 @@ pub enum HilDecideCredential<'a> {
     DemoSession(&'a str),
 }
 
+/// HIL-owned effect selected by an Identity-coordinated tenant lifecycle step.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HilTenantLifecycleKind {
+    Provision,
+    Offboard,
+}
+
+/// Durable, content-addressed receipt returned by HIL's tenant owner effect.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HilTenantLifecycleReceipt {
+    pub tenant: String,
+    pub operation_id: Uuid,
+    pub kind: HilTenantLifecycleKind,
+    pub state: String,
+    pub generation: i64,
+    pub pending_denied: i64,
+    pub receipt_sha256: String,
+    pub updated_at: String,
+}
+
+#[derive(Serialize)]
+struct HilTenantLifecycleRequest {
+    operation_id: Uuid,
+    kind: HilTenantLifecycleKind,
+}
+
 /// Async client for the HIL service.
 ///
 /// Cheap to clone — the HTTP provider is behind an `Arc`.
@@ -387,6 +416,28 @@ impl HilClient {
     /// config.
     pub fn base_url(&self) -> &Url {
         &self.base_url
+    }
+
+    /// Execute HIL's idempotent owner step for a durable tenant lifecycle
+    /// operation. The client must be scoped to the same authenticated tenant;
+    /// HIL rejects an absent or mismatched production scope.
+    pub async fn tenant_lifecycle(
+        &self,
+        tenant: &str,
+        operation_id: Uuid,
+        kind: HilTenantLifecycleKind,
+    ) -> Result<HilTenantLifecycleReceipt, ClavenarError> {
+        let url = self.join(&format!(
+            "admin/tenants/{}/lifecycle",
+            percent_encode(tenant)
+        ))?;
+        let request = HilTenantLifecycleRequest { operation_id, kind };
+        let response = self
+            .apply_tenant_scope(self.http.client().post(url))
+            .json(&request)
+            .send()
+            .await?;
+        read_json(response).await
     }
 
     /// `POST /pending` — create a fresh HIL pending row directly, without
@@ -1153,5 +1204,35 @@ mod tests {
             .build()
             .unwrap();
         assert!(!request.headers().contains_key(TENANT_SCOPE_HEADER));
+    }
+
+    #[test]
+    fn hil_tenant_lifecycle_wire_contract_round_trips() {
+        let operation_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let request = HilTenantLifecycleRequest {
+            operation_id,
+            kind: HilTenantLifecycleKind::Offboard,
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "operation_id": operation_id,
+                "kind": "offboard",
+            })
+        );
+
+        let receipt: HilTenantLifecycleReceipt = serde_json::from_value(serde_json::json!({
+            "tenant": "acme",
+            "operation_id": operation_id,
+            "kind": "offboard",
+            "state": "offboarded",
+            "generation": 2,
+            "pending_denied": 3,
+            "receipt_sha256": "sha256:receipt",
+            "updated_at": "2026-07-25T00:00:00Z",
+        }))
+        .unwrap();
+        assert_eq!(receipt.operation_id, operation_id);
+        assert_eq!(receipt.pending_denied, 3);
     }
 }

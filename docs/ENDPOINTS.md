@@ -239,6 +239,7 @@ different positive duration with `with_request_timeout`.
 | `list_pending()` / `list_pending_scoped(jwt)` | `GET /pending?status=pending` | `Vec<PendingRequest>` |
 | `list_auto_approved()` / `list_auto_approved_scoped(jwt)` | `GET /pending?status=approved`, filtered to `decided_by = system:policy-tier` | `Vec<PendingRequest>` |
 | `get_pending(id)` | `GET /pending/{id}` | `Option<PendingRequest>` (`404` → `None`) |
+| `tenant_lifecycle(tenant, operation_id, kind)` | `POST /admin/tenants/{tenant}/lifecycle` | `HilTenantLifecycleReceipt` |
 | `verify_decision_link(token)` | `POST /decision-link/verify` | `DecisionLinkVerify` |
 | `patch_incident_summary(id, summary)` | `PATCH /pending/{id}/incident` | `PendingRequest` |
 | `assign(id, assigned_to, pool)` | `POST /pending/{id}/assign` | `PendingRequest` |
