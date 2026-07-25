@@ -136,6 +136,106 @@ pub struct TenantOffboardResult {
     pub budget_cleared: bool,
 }
 
+/// Durable tenant lifecycle kind.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantLifecycleKind {
+    Provision,
+    Offboard,
+}
+
+/// Coordinator-level lifecycle state. Only `Succeeded` is a completed tenant
+/// lifecycle; retry and manual-recovery states remain non-success.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantLifecycleOperationState {
+    Pending,
+    Running,
+    WaitingRetry,
+    ManualRecovery,
+    Compensating,
+    Compensated,
+    Succeeded,
+}
+
+/// One ordered owner-effect state in a tenant lifecycle operation.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantLifecycleStepState {
+    Pending,
+    Running,
+    Retryable,
+    ManualRecovery,
+    Compensating,
+    Compensated,
+    Skipped,
+    Succeeded,
+}
+
+/// Complete durable state for one ordered tenant lifecycle step.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TenantLifecycleStep {
+    pub id: String,
+    pub order: i64,
+    pub owner: String,
+    pub effect: String,
+    pub compensation: String,
+    pub state: TenantLifecycleStepState,
+    pub attempts: i64,
+    pub lease_expires_at: Option<String>,
+    pub next_retry_at: Option<String>,
+    pub receipt_sha256: Option<String>,
+    pub receipt: Option<serde_json::Value>,
+    pub last_error: Option<String>,
+    pub updated_at: String,
+}
+
+/// Identity's tenant-confined terminal receipt and resumable operation state.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TenantLifecycleOperation {
+    pub id: String,
+    pub tenant: String,
+    pub kind: TenantLifecycleKind,
+    pub idempotency_key: String,
+    pub intent_sha256: String,
+    pub reason: String,
+    pub state: TenantLifecycleOperationState,
+    pub actor_sub: String,
+    pub actor_idp: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub steps: Vec<TenantLifecycleStep>,
+}
+
+/// Result of durably claiming the first non-terminal owner effect.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TenantLifecycleStepClaim {
+    pub operation: TenantLifecycleOperation,
+    pub step_id: String,
+    pub lease_token: String,
+    pub lease_expires_at: String,
+}
+
+/// Completion class written after an owner effect.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TenantLifecycleStepOutcome {
+    Succeeded,
+    Retryable,
+    ManualRecovery,
+}
+
+/// Body for recording one owner effect against its exact live lease.
+#[derive(Debug, Clone, Serialize)]
+pub struct TenantLifecycleStepCompletion<'a> {
+    pub lease_token: &'a str,
+    pub outcome: TenantLifecycleStepOutcome,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<&'a str>,
+}
+
 /// One agent-targeted gauntlet case recorded on a certificate. Mirror of
 /// `clavenar-identity::agents::lifecycle::CertificationCase`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -721,21 +821,136 @@ impl AgentsClient {
         self.post_json(url, &body).await
     }
 
-    /// `POST /tenants/{tenant}/offboard` — decommission every agent in a
-    /// tenant (with revocation broadcast), retire its upstreams, clear
-    /// its budget, and emit a `tenant.offboarded` chain marker. Requires
-    /// the `tenant:offboard` capability. `confirm` must equal `tenant`
-    /// (server-side echo of the type-the-name guard). The audit-row
-    /// tombstone is a separate ledger call the console makes after this.
-    pub async fn offboard_tenant(
+    /// Start or recover one durable provisioning/offboarding operation.
+    ///
+    /// `Idempotency-Key` is immutable within `(tenant, kind)`: reusing it
+    /// with the same intent returns the existing operation; changed intent is
+    /// `409`. A different active operation for the same tenant is also `409`.
+    pub async fn start_tenant_lifecycle(
+        &self,
+        tenant: &str,
+        idempotency_key: &str,
+        kind: TenantLifecycleKind,
+        confirm: &str,
+        reason: &str,
+    ) -> Result<TenantLifecycleOperation, ClavenarError> {
+        let url = self.join(&format!("tenants/{}/lifecycle", percent_encode(tenant)))?;
+        let body = serde_json::json!({
+            "kind": kind,
+            "confirm": confirm,
+            "reason": reason,
+        });
+        let mut request = self
+            .http
+            .client()
+            .post(url)
+            .header("Idempotency-Key", idempotency_key)
+            .json(&body);
+        if let Some(token) = self.bearer.as_ref() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        decode_response(status, body)
+    }
+
+    /// Read one tenant-confined lifecycle operation and all ordered steps.
+    pub async fn tenant_lifecycle(
+        &self,
+        tenant: &str,
+        operation_id: &str,
+    ) -> Result<TenantLifecycleOperation, ClavenarError> {
+        let url = self.join(&format!(
+            "tenants/{}/lifecycle/{}",
+            percent_encode(tenant),
+            percent_encode(operation_id)
+        ))?;
+        self.get_json(url).await
+    }
+
+    /// Journal the first non-terminal step as running before calling its
+    /// idempotent owner effect.
+    pub async fn claim_tenant_lifecycle_step(
+        &self,
+        tenant: &str,
+        operation_id: &str,
+        step_id: &str,
+        owner: &str,
+    ) -> Result<TenantLifecycleStepClaim, ClavenarError> {
+        let url = self.join(&format!(
+            "tenants/{}/lifecycle/{}/steps/{}/claim",
+            percent_encode(tenant),
+            percent_encode(operation_id),
+            percent_encode(step_id)
+        ))?;
+        self.post_json(url, &serde_json::json!({ "owner": owner }))
+            .await
+    }
+
+    /// Record a bounded owner receipt or a sanitized retry/manual-recovery
+    /// result against the exact live step lease.
+    pub async fn complete_tenant_lifecycle_step(
+        &self,
+        tenant: &str,
+        operation_id: &str,
+        step_id: &str,
+        completion: &TenantLifecycleStepCompletion<'_>,
+    ) -> Result<TenantLifecycleOperation, ClavenarError> {
+        let url = self.join(&format!(
+            "tenants/{}/lifecycle/{}/steps/{}/complete",
+            percent_encode(tenant),
+            percent_encode(operation_id),
+            percent_encode(step_id)
+        ))?;
+        self.post_json(url, completion).await
+    }
+
+    /// Make a bounded retryable step immediately due without resetting its
+    /// attempt count.
+    pub async fn retry_tenant_lifecycle_step(
+        &self,
+        tenant: &str,
+        operation_id: &str,
+        step_id: &str,
+    ) -> Result<TenantLifecycleOperation, ClavenarError> {
+        let url = self.join(&format!(
+            "tenants/{}/lifecycle/{}/steps/{}/retry",
+            percent_encode(tenant),
+            percent_encode(operation_id),
+            percent_encode(step_id)
+        ))?;
+        self.post_json(url, &serde_json::json!({})).await
+    }
+
+    /// Execute the Identity-owned `authority_fence` effect for a previously
+    /// claimed offboard step. This method cannot start or complete a lifecycle
+    /// operation; callers must record the returned counts through
+    /// [`Self::complete_tenant_lifecycle_step`].
+    pub async fn offboard_tenant_effect(
         &self,
         tenant: &str,
         confirm: &str,
         reason: Option<&str>,
+        operation_id: &str,
+        lease_token: &str,
     ) -> Result<TenantOffboardResult, ClavenarError> {
         let url = self.join(&format!("tenants/{}/offboard", percent_encode(tenant)))?;
         let body = serde_json::json!({ "confirm": confirm, "reason": reason });
-        self.post_json(url, &body).await
+        let mut request = self
+            .http
+            .client()
+            .post(url)
+            .header("X-Clavenar-Lifecycle-Operation", operation_id)
+            .header("X-Clavenar-Lifecycle-Lease", lease_token)
+            .json(&body);
+        if let Some(token) = self.bearer.as_ref() {
+            request = request.bearer_auth(token);
+        }
+        let response = request.send().await?;
+        let status = response.status();
+        let body = response.text().await?;
+        decode_response(status, body)
     }
 
     /// Build a URL of the form `agents/{id}/<verb>?tenant=<t>`. The
@@ -815,7 +1030,7 @@ mod tests {
         Json, Router,
         extract::{Path, Query, State},
         http::HeaderMap,
-        routing::get,
+        routing::{get, post},
     };
     use serde_json::json;
     use std::sync::Arc;
@@ -972,6 +1187,132 @@ mod tests {
         assert_eq!(r.agents_decommissioned, 3);
         assert_eq!(r.upstreams_retired, 1);
         assert!(r.budget_cleared);
+    }
+
+    fn lifecycle_operation_json(state: &str) -> serde_json::Value {
+        json!({
+            "id": "operation-1",
+            "tenant": "acme",
+            "kind": "offboard",
+            "idempotency_key": "request-1",
+            "intent_sha256": format!("sha256:{}", "a".repeat(64)),
+            "reason": "contract ended",
+            "state": state,
+            "actor_sub": "operator",
+            "actor_idp": "issuer",
+            "created_at": "2026-07-25T00:00:00.000Z",
+            "updated_at": "2026-07-25T00:00:01.000Z",
+            "steps": [{
+                "id": "authority_fence",
+                "order": 1,
+                "owner": "identity",
+                "effect": "decommission-revoke-retire-and-freeze",
+                "compensation": "manual-recovery-only",
+                "state": "running",
+                "attempts": 1,
+                "lease_expires_at": "2026-07-25T00:00:31.000Z",
+                "next_retry_at": null,
+                "receipt_sha256": null,
+                "receipt": null,
+                "last_error": null,
+                "updated_at": "2026-07-25T00:00:01.000Z"
+            }]
+        })
+    }
+
+    #[test]
+    fn tenant_lifecycle_operation_matches_server_wire_shape() {
+        let operation: TenantLifecycleOperation =
+            serde_json::from_value(lifecycle_operation_json("running")).unwrap();
+        assert_eq!(operation.kind, TenantLifecycleKind::Offboard);
+        assert_eq!(operation.state, TenantLifecycleOperationState::Running);
+        assert_eq!(operation.steps[0].state, TenantLifecycleStepState::Running);
+    }
+
+    #[tokio::test]
+    async fn lifecycle_start_sends_immutable_idempotency_key() {
+        let app = Router::new().route(
+            "/tenants/acme/lifecycle",
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(
+                        headers
+                            .get("idempotency-key")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("request-1")
+                    );
+                    assert_eq!(body["kind"], "offboard");
+                    assert_eq!(body["confirm"], "acme");
+                    Json(lifecycle_operation_json("pending"))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = AgentsClient::new(format!("http://{address}/"))
+            .unwrap()
+            .with_bearer("operator-token");
+        let operation = client
+            .start_tenant_lifecycle(
+                "acme",
+                "request-1",
+                TenantLifecycleKind::Offboard,
+                "acme",
+                "contract ended",
+            )
+            .await
+            .unwrap();
+        assert_eq!(operation.state, TenantLifecycleOperationState::Pending);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn offboard_effect_sends_exact_operation_lease() {
+        let app = Router::new().route(
+            "/tenants/acme/offboard",
+            post(
+                |headers: HeaderMap, Json(body): Json<serde_json::Value>| async move {
+                    assert_eq!(
+                        headers
+                            .get("x-clavenar-lifecycle-operation")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("operation-1")
+                    );
+                    assert_eq!(
+                        headers
+                            .get("x-clavenar-lifecycle-lease")
+                            .and_then(|value| value.to_str().ok()),
+                        Some("lease-1")
+                    );
+                    assert_eq!(body["confirm"], "acme");
+                    Json(json!({
+                        "tenant": "acme",
+                        "agents_decommissioned": 2,
+                        "upstreams_retired": 1,
+                        "budget_cleared": true
+                    }))
+                },
+            ),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = AgentsClient::new(format!("http://{address}/"))
+            .unwrap()
+            .with_bearer("operator-token");
+        let result = client
+            .offboard_tenant_effect(
+                "acme",
+                "acme",
+                Some("contract ended"),
+                "operation-1",
+                "lease-1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.agents_decommissioned, 2);
+        server.abort();
     }
 
     #[tokio::test]

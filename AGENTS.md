@@ -33,7 +33,7 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - `src/lib.rs` — crate root; module decls + the full public re-export surface. Edition 2024.
 - `src/client.rs` — `ClavenarClient`, `ClavenarClientBuilder`, `Auth`. `send_raw` is the proxy client's status-dispatch site (200→JSON, 403→`Veto`, 401→`Unauthorized`, 400→`BadRequest`, else `Server`). 403→`Veto` is proxy-specific — the other clients map 403 to `Server` (agents/policies/brain/sim via `http.rs::decode_response`, ledger via its own `get_json`/`post_json`).
 - `src/ledger.rs` — `LedgerClient` + the large set of typed row/report mirrors (audit, lifecycle, exports, regulatory bundle, hunt/canary/baseline analytics), plus a write path `log` (`POST /log` — append a forensic row; the server computes the chain) and tenant admin (`tombstone_tenant`; budget/offboard live on `AgentsClient`). The audit/verify surface is no longer strictly read-only.
-- `src/agents.rs` — `AgentsClient`: identity enrollment + state-machine transitions, certification, grant/envelope types.
+- `src/agents.rs` — `AgentsClient`: identity enrollment + state-machine transitions, certification, grant/envelope types, and durable tenant lifecycle start/status/claim/complete/retry receipts.
 - `src/policies.rs` — `PoliciesClient`: list/get/create/update/activate/deactivate/delete/rollback/diff + Lab/Miner batch surfaces, typed conflict/error parsers.
 - `src/brain.rs` — `BrainClient`: aggregated-metrics `explain-pattern` local/test
   compatibility client; not a production external integration surface.

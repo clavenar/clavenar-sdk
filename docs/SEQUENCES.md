@@ -570,7 +570,8 @@ diagrams above lean on.
   incident-case writes — full list in `ENDPOINTS.md`)
 - Agent lifecycle: `src/agents.rs::AgentsClient`; idempotency helper
   `create_request_matches`; migration constant
-  `MIGRATION_ACTOR_SUB_PREFIX`
+  `MIGRATION_ACTOR_SUB_PREFIX`; durable tenant lifecycle methods and
+  `TenantLifecycleOperation`
 - Policy management: `src/policies.rs::PoliciesClient`
 - Typed error lifters: `src/policies.rs::parse_batch_error`,
   `parse_mine_error`, and `PoliciesClient::parse_conflict`

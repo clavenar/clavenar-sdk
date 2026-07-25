@@ -257,12 +257,14 @@ agents.suspend(&created.record.id, "acme", Some("incident #4172")).await?;
 
 `AgentsClient` also carries the per-tenant operator surface:
 `get_budget` / `set_budget` read and set a tenant's monthly micro-USD
-spend ceiling (`TenantBudget`), and `offboard_tenant(tenant, confirm,
-reason)` decommissions every agent in a tenant (`confirm` must equal the
-tenant name). The matching audit-row erase is a separate
-`LedgerClient::tombstone_tenant(tenant, reason)` call the console makes
-after the identity offboard — ledger reads need no change, tombstone
-filtering is server-side and transparent. `LedgerClient::finops_spend`
+spend ceiling (`TenantBudget`). Durable tenant provisioning/offboarding uses
+`start_tenant_lifecycle`, `tenant_lifecycle`,
+`claim_tenant_lifecycle_step`, `complete_tenant_lifecycle_step`, and
+`retry_tenant_lifecycle_step`. The destructive Identity owner effect is
+available only as `offboard_tenant_effect` with the exact claimed operation
+and lease; there is no best-effort convenience that skips the coordinator.
+Callers may report success only from
+`TenantLifecycleOperationState::Succeeded`. `LedgerClient::finops_spend`
 takes a `tenant` argument to scope the spend rollup to one operator
 tenant (`None` keeps the deployment-wide rollup).
 

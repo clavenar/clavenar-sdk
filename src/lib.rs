@@ -61,7 +61,10 @@ pub use agents::{
     CertificationCase, CertificationRequest, ContainmentStatus, CreateAgentRequest,
     EnvelopeRequest, ForceHilFlag, GrantConsumption, LifecycleRequest, LifecycleResponse,
     MIGRATION_ACTOR_SUB_PREFIX, OrphanWorkload, SignedCertificate, TenantBudget,
-    TenantOffboardResult, create_request_matches,
+    TenantLifecycleKind, TenantLifecycleOperation, TenantLifecycleOperationState,
+    TenantLifecycleStep, TenantLifecycleStepClaim, TenantLifecycleStepCompletion,
+    TenantLifecycleStepOutcome, TenantLifecycleStepState, TenantOffboardResult,
+    create_request_matches,
 };
 pub use brain::{BrainClient, ExplainPatternRequest, ExplainPatternResponse};
 pub use client::{Auth, ClavenarClient, ClavenarClientBuilder};

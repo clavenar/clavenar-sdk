@@ -132,7 +132,12 @@ RFC 3339.
 | `set_description(id, tenant, text)` | `POST /agents/{id}/description?tenant=` | `AgentRecord` |
 | `get_budget(tenant)` | `GET /tenants/{tenant}/budget` | `TenantBudget` (per-tenant monthly micro-USD ceiling; `budget_micros` `None` when unset) |
 | `set_budget(tenant, budget_micros)` | `POST /tenants/{tenant}/budget` | `TenantBudget` |
-| `offboard_tenant(tenant, confirm, reason)` | `POST /tenants/{tenant}/offboard` | `TenantOffboardResult` (`confirm` must equal `tenant`) |
+| `start_tenant_lifecycle(tenant, key, kind, confirm, reason)` | `POST /tenants/{tenant}/lifecycle` + `Idempotency-Key` | `TenantLifecycleOperation` |
+| `tenant_lifecycle(tenant, operation_id)` | `GET /tenants/{tenant}/lifecycle/{operation_id}` | `TenantLifecycleOperation` |
+| `claim_tenant_lifecycle_step(tenant, operation_id, step_id, owner)` | `POST .../steps/{step_id}/claim` | `TenantLifecycleStepClaim` |
+| `complete_tenant_lifecycle_step(...)` | `POST .../steps/{step_id}/complete` | `TenantLifecycleOperation` |
+| `retry_tenant_lifecycle_step(tenant, operation_id, step_id)` | `POST .../steps/{step_id}/retry` | `TenantLifecycleOperation` |
+| `offboard_tenant_effect(tenant, confirm, reason, operation_id, lease)` | `POST /tenants/{tenant}/offboard` + exact lifecycle headers | `TenantOffboardResult` |
 
 Sends `Authorization: Bearer` when set via `with_bearer`; decodes via
 `decode_response` (`create` returns `201`). `get`/`list` elide
