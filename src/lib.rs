@@ -99,15 +99,18 @@ pub use hil::{
 };
 pub use http::{HttpProvider, StaticHttpClient, install_process_http_provider};
 pub use ledger::{
-    AnchorSummary, AuditFilterParams, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline,
-    CanaryDeltas, CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord,
-    CaseTimelineEvent, ChainVerifySummary, ComplianceEvidenceScope, ComplianceRegister,
-    ControlEvidence, CorpusEntry, EnvelopeAnalysis, EvidenceStatus, ExportOutcome, ExportRecord,
-    FleetBehavioralDiff, FleetBehavioralDiffScope, FleetDiffRow, HuntAgentRollup, HuntParams,
-    HuntResult, LedgerClient, LedgerEntry, LedgerTenantLifecycleKind, LedgerTenantLifecycleReceipt,
-    LifecycleRow, LogEntry, LogReceipt, ModelUpgradeCanary, ModelUpgradeCanaryScope,
-    RegisterWindow, RegulatoryExportOptions, ReplayCorpus, ReplayCorpusParams, SilentAgent,
-    SilentAgentsReport, SpendAgentRow, SpendRollup, ToolShare, ToolUsage, VerifyResult, WindowDiff,
+    ActiveAgentAdjustment, ActiveAgentAdjustmentKind, ActiveAgentAdjustmentReceipt,
+    ActiveAgentAppliedAdjustment, ActiveAgentFinalization, ActiveAgentInvoice, ActiveAgentMeterRow,
+    ActiveAgentMeterSource, ActiveAgentMeterWindow, AnchorSummary, AuditFilterParams,
+    BaselineDeviation, BaselineWindowProfile, BehavioralBaseline, CanaryDeltas, CanaryModel,
+    CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord, CaseTimelineEvent, ChainVerifySummary,
+    ComplianceEvidenceScope, ComplianceRegister, ControlEvidence, CorpusEntry, EnvelopeAnalysis,
+    EvidenceStatus, ExportOutcome, ExportRecord, FleetBehavioralDiff, FleetBehavioralDiffScope,
+    FleetDiffRow, HuntAgentRollup, HuntParams, HuntResult, LedgerClient, LedgerEntry,
+    LedgerTenantLifecycleKind, LedgerTenantLifecycleReceipt, LifecycleRow, LogEntry, LogReceipt,
+    ModelUpgradeCanary, ModelUpgradeCanaryScope, RegisterWindow, RegulatoryExportOptions,
+    ReplayCorpus, ReplayCorpusParams, SilentAgent, SilentAgentsReport, SpendAgentRow, SpendRollup,
+    ToolShare, ToolUsage, VerifyResult, WindowDiff,
 };
 pub use pack::{
     PACK_AUDIENCE, PACK_MANIFEST_FILENAME, PACK_MANIFEST_SCHEMA_VERSION, PACK_SIGNATURE_SIDECAR,

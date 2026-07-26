@@ -842,6 +842,135 @@ pub struct SpendRollup {
     pub returned: i64,
 }
 
+/// One active agent in a reproducible rolling subscription invoice.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentMeterRow {
+    pub agent_key: String,
+    pub qualified_events: usize,
+    pub late_events: usize,
+    pub first_qualified_at: String,
+    pub last_qualified_at: String,
+    pub source_commitment: String,
+}
+
+/// One immutable credit or correction applied to an active-agent invoice.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentAppliedAdjustment {
+    pub idempotency_key: Uuid,
+    pub kind: ActiveAgentAdjustmentKind,
+    pub units_delta: i64,
+    #[serde(default)]
+    pub agent_key: Option<String>,
+    pub reason: String,
+    pub recorded_at: String,
+    pub source_entry_id: Uuid,
+    pub source_entry_hash: String,
+}
+
+#[derive(Debug, Clone, Copy, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActiveAgentAdjustmentKind {
+    Credit,
+    Correction,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentMeterWindow {
+    pub kind: String,
+    pub days: i64,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentFinalization {
+    pub late_event_grace_hours: i64,
+    pub final_at: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentMeterSource {
+    pub qualification: String,
+    pub deduplication: String,
+    pub qualified_event_count: usize,
+    pub late_event_count: usize,
+    pub event_commitment: String,
+    pub adjustment_commitment: String,
+    pub chain_length: i64,
+    #[serde(default)]
+    pub chain_head: Option<String>,
+}
+
+/// Exact `clavenar.active-agent-meter/v1` tenant invoice.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentInvoice {
+    pub contract: String,
+    pub meter_version: String,
+    pub tenant: String,
+    pub window: ActiveAgentMeterWindow,
+    pub observed_through: String,
+    pub finalization: ActiveAgentFinalization,
+    pub agents: Vec<ActiveAgentMeterRow>,
+    pub base_active_agents: usize,
+    pub adjustments: Vec<ActiveAgentAppliedAdjustment>,
+    pub net_active_agents: i64,
+    pub source: ActiveAgentMeterSource,
+    pub invoice_sha256: String,
+}
+
+/// Immutable credit/correction accepted by
+/// [`LedgerClient::create_active_agent_adjustment`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ActiveAgentAdjustment {
+    pub contract: &'static str,
+    pub meter_version: &'static str,
+    pub tenant: String,
+    pub target_as_of: String,
+    pub idempotency_key: Uuid,
+    pub kind: ActiveAgentAdjustmentKind,
+    pub units_delta: i64,
+    pub agent_key: Option<String>,
+    pub reason: String,
+}
+
+impl ActiveAgentAdjustment {
+    pub fn new(
+        tenant: impl Into<String>,
+        target_as_of: impl Into<String>,
+        idempotency_key: Uuid,
+        kind: ActiveAgentAdjustmentKind,
+        units_delta: i64,
+        reason: impl Into<String>,
+    ) -> Self {
+        Self {
+            contract: "clavenar.active-agent-adjustment/v1",
+            meter_version: "1.0.0",
+            tenant: tenant.into(),
+            target_as_of: target_as_of.into(),
+            idempotency_key,
+            kind,
+            units_delta,
+            agent_key: None,
+            reason: reason.into(),
+        }
+    }
+
+    pub fn for_agent(mut self, agent_key: impl Into<String>) -> Self {
+        self.agent_key = Some(agent_key.into());
+        self
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct ActiveAgentAdjustmentReceipt {
+    pub retained: bool,
+    pub adjustment_sha256: String,
+    pub entry_id: Uuid,
+    pub entry_seq: i64,
+    pub entry_hash: String,
+}
+
 /// One entry in an incident case's activity timeline.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct CaseTimelineEvent {
@@ -1469,6 +1598,34 @@ impl LedgerClient {
         self.get_json(&path).await
     }
 
+    /// Build a deterministic 30-day tenant active-agent invoice from a
+    /// completely verified Ledger chain. Both timestamps must be canonical
+    /// UTC RFC 3339 seconds; `observed_through` may extend at most 72 hours
+    /// beyond `as_of` to bind late-event finalization.
+    pub async fn active_agent_invoice(
+        &self,
+        tenant: &str,
+        as_of: &str,
+        observed_through: &str,
+    ) -> Result<ActiveAgentInvoice, ClavenarError> {
+        self.get_json(&format!(
+            "finops/active-agents?tenant={}&as_of={}&observed_through={}",
+            percent_encode(tenant),
+            percent_encode(as_of),
+            percent_encode(observed_through)
+        ))
+        .await
+    }
+
+    /// Append an immutable, idempotent credit or correction to the chain.
+    pub async fn create_active_agent_adjustment(
+        &self,
+        adjustment: &ActiveAgentAdjustment,
+    ) -> Result<ActiveAgentAdjustmentReceipt, ClavenarError> {
+        self.post_json("finops/active-agents/adjustments", adjustment)
+            .await
+    }
+
     /// `GET /exports` — bookkeeping list of cold-tier snapshots, newest
     /// first. Empty vec when the export sweeper has never run (or when
     /// the sink isn't configured — the table exists either way, the
@@ -1816,6 +1973,29 @@ impl LedgerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn active_agent_adjustment_constructor_pins_contract_and_scope() {
+        let idempotency_key = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000").unwrap();
+        let adjustment = ActiveAgentAdjustment::new(
+            "tenant-a",
+            "2026-07-01T00:00:00Z",
+            idempotency_key,
+            ActiveAgentAdjustmentKind::Credit,
+            -1,
+            "service credit",
+        )
+        .for_agent("tenant-a:agent:billing-bot");
+        let body = serde_json::to_value(adjustment).unwrap();
+
+        assert_eq!(body["contract"], "clavenar.active-agent-adjustment/v1");
+        assert_eq!(body["meter_version"], "1.0.0");
+        assert_eq!(body["tenant"], "tenant-a");
+        assert_eq!(body["idempotency_key"], idempotency_key.to_string());
+        assert_eq!(body["kind"], "credit");
+        assert_eq!(body["units_delta"], -1);
+        assert_eq!(body["agent_key"], "tenant-a:agent:billing-bot");
+    }
 
     #[test]
     fn ledger_entry_round_trips_through_json() {
