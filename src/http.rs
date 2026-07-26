@@ -16,12 +16,14 @@
 //! itself dependency-free of any specific refresh mechanism.
 
 use std::fmt::Debug;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use reqwest::{Client, StatusCode};
 use url::Url;
 
 use crate::ClavenarError;
+
+static PROCESS_HTTP_PROVIDER: OnceLock<Arc<dyn HttpProvider>> = OnceLock::new();
 
 /// Source of a `reqwest::Client` for a per-request hot path.
 ///
@@ -69,10 +71,27 @@ impl HttpProvider for StaticHttpClient {
 /// Internal: build the default plain-HTTP `StaticHttpClient` for a
 /// per-service client's `new()` constructor.
 pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError> {
+    if let Some(provider) = PROCESS_HTTP_PROVIDER.get() {
+        return Ok(Arc::clone(provider));
+    }
     let client = Client::builder()
         .build()
         .map_err(ClavenarError::Transport)?;
     Ok(Arc::new(StaticHttpClient::new(client)))
+}
+
+/// Install the process-wide provider used by all subsequent default client
+/// constructors.
+///
+/// Operator front ends use this once, before dispatch, so every command shares
+/// one secure transport profile. Libraries that need multiple profiles should
+/// keep using each client's `with_http_provider`/`http_provider` API.
+pub fn install_process_http_provider(
+    provider: Arc<dyn HttpProvider>,
+) -> Result<(), ClavenarError> {
+    PROCESS_HTTP_PROVIDER.set(provider).map_err(|_| {
+        ClavenarError::InvalidConfig("process HTTP provider is already installed".into())
+    })
 }
 
 /// Parse a base URL and normalize it for use with `Url::join`.

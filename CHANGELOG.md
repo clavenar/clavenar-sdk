@@ -7,6 +7,15 @@ at that version".
 
 ## [Unreleased]
 
+## [0.4.0]
+
+### Added
+
+- `SecureTransportProfile` provides one redacted, atomically reloadable mTLS,
+  token, connect/request-timeout, and explicit-proxy snapshot for every
+  service client. `install_process_http_provider` lets operator front ends
+  install that profile before dispatch.
+
 ## [0.3.0]
 
 - Embed the exact `clavenar.client-migration/v1` fixture and schema, document

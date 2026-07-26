@@ -20,8 +20,9 @@
 //!   `/audit/{agent_id}`, and `/verify` endpoints with typed mirrors of
 //!   the server-side [`LedgerEntry`] and [`VerifyResult`] structs.
 //!
-//! Auth is currently [`Auth::None`] or [`Auth::Bearer`]; mTLS / OIDC /
-//! SPIFFE land in a future minor.
+//! [`SecureTransportProfile`] supplies pinned mutual TLS, bounded deadlines,
+//! explicit proxy policy, bearer acquisition, and atomic credential reload
+//! across every client in this crate.
 //!
 //! # Quick start
 //!
@@ -54,6 +55,7 @@ mod http;
 mod ledger;
 mod pack;
 mod policies;
+mod secure_transport;
 mod sim;
 
 pub use agents::{
@@ -95,7 +97,7 @@ pub use hil::{
     HilTenantLifecycleKind, HilTenantLifecycleReceipt, MODIFICATION_DIFF_CONTRACT,
     ModificationDiff, PendingRequest, PendingStatus, TENANT_SCOPE_HEADER, UserIdentities,
 };
-pub use http::{HttpProvider, StaticHttpClient};
+pub use http::{HttpProvider, StaticHttpClient, install_process_http_provider};
 pub use ledger::{
     AnchorSummary, AuditFilterParams, BaselineDeviation, BaselineWindowProfile, BehavioralBaseline,
     CanaryDeltas, CanaryModel, CanarySignalShare, CanaryWindow, CaseDetail, CaseRecord,
@@ -122,5 +124,8 @@ pub use policies::{
     PolicyTenantLifecycleReceipt, PolicyVersionRow, RollbackRequest, StateChangeRequest,
     UpdatePolicyRequest, ValidatePolicyRequest, ValidatePolicyResponse, VersionsListResponse,
     parse_batch_error, parse_mine_error,
+};
+pub use secure_transport::{
+    ProxyPolicy, SecureTransportConfig, SecureTransportProfile, TokenSource,
 };
 pub use sim::{SimAgentRecord, SimClient, SimStats, SimStatus};
