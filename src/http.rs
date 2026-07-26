@@ -86,9 +86,7 @@ pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError>
 /// Operator front ends use this once, before dispatch, so every command shares
 /// one secure transport profile. Libraries that need multiple profiles should
 /// keep using each client's `with_http_provider`/`http_provider` API.
-pub fn install_process_http_provider(
-    provider: Arc<dyn HttpProvider>,
-) -> Result<(), ClavenarError> {
+pub fn install_process_http_provider(provider: Arc<dyn HttpProvider>) -> Result<(), ClavenarError> {
     PROCESS_HTTP_PROVIDER.set(provider).map_err(|_| {
         ClavenarError::InvalidConfig("process HTTP provider is already installed".into())
     })
