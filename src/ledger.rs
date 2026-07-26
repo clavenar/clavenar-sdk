@@ -316,6 +316,12 @@ pub struct ReplayCorpusParams {
 /// readme, no exports" — i.e. the slice 1+2 shape.
 #[derive(Debug, Clone, Default)]
 pub struct RegulatoryExportOptions {
+    /// Required authenticated operator tenant. Trusted operator front ends
+    /// derive this value from their verified session; CLI callers resolve it
+    /// from the same tenant-bound credential profile used for the request.
+    /// The ledger applies it as a mandatory storage predicate and commits it
+    /// into the signed bundle manifest.
+    pub tenant: Option<String>,
     /// Operator-supplied technical-documentation markdown. When
     /// `Some(bytes)`, the SDK uploads the bytes verbatim as the
     /// request body with `Content-Type: text/markdown`; the ledger
@@ -1529,8 +1535,14 @@ impl LedgerClient {
         // produces a stable shape across hosts.
         let from_str = from.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
         let to_str = to.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        let tenant = opts.tenant.as_deref().ok_or_else(|| {
+            ClavenarError::InvalidConfig(
+                "regulatory export requires an authenticated tenant".into(),
+            )
+        })?;
         let mut path = format!(
-            "export/regulatory?from={}&to={}",
+            "export/regulatory?tenant={}&from={}&to={}",
+            percent_encode(tenant),
             percent_encode(&from_str),
             percent_encode(&to_str),
         );
@@ -2587,6 +2599,7 @@ mod tests {
 
         #[derive(Default, Clone, Debug)]
         struct Captured {
+            tenant: String,
             from: String,
             to: String,
             include_exports: Option<String>,
@@ -2606,6 +2619,7 @@ mod tests {
                     let captured = captured_for_handler.clone();
                     async move {
                         let mut c = captured.lock().unwrap();
+                        c.tenant = q.get("tenant").cloned().unwrap_or_default();
                         c.from = q.get("from").cloned().unwrap_or_default();
                         c.to = q.get("to").cloned().unwrap_or_default();
                         c.include_exports = q.get("include_exports").cloned();
@@ -2642,7 +2656,14 @@ mod tests {
 
         // Path A: no readme, no include_exports → minimal request.
         let bytes = client
-            .regulatory_export(&from, &to, RegulatoryExportOptions::default())
+            .regulatory_export(
+                &from,
+                &to,
+                RegulatoryExportOptions {
+                    tenant: Some("acme".into()),
+                    ..Default::default()
+                },
+            )
             .await
             .unwrap();
         assert_eq!(bytes.len(), 8, "placeholder bundle bytes returned verbatim");
@@ -2650,6 +2671,7 @@ mod tests {
             let c = captured.lock().unwrap();
             assert!(c.from.starts_with("2023-"));
             assert!(c.to.starts_with("2023-"));
+            assert_eq!(c.tenant, "acme");
             assert!(c.include_exports.is_none());
             assert!(c.content_type.is_none() || c.body_len == 0);
             assert_eq!(c.body_len, 0, "no readme → empty body");
@@ -2662,6 +2684,7 @@ mod tests {
                 &from,
                 &to,
                 RegulatoryExportOptions {
+                    tenant: Some("acme".into()),
                     readme: Some(prose.to_vec()),
                     include_exports: true,
                     include_compliance: false,
@@ -2683,6 +2706,7 @@ mod tests {
                 &from,
                 &to,
                 RegulatoryExportOptions {
+                    tenant: Some("acme".into()),
                     include_compliance: true,
                     ..Default::default()
                 },
@@ -2726,7 +2750,14 @@ mod tests {
         let from = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap();
         let to = chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_010_000, 0).unwrap();
         let err = client
-            .regulatory_export(&from, &to, RegulatoryExportOptions::default())
+            .regulatory_export(
+                &from,
+                &to,
+                RegulatoryExportOptions {
+                    tenant: Some("acme".into()),
+                    ..Default::default()
+                },
+            )
             .await
             .expect_err("413 must surface as ClavenarError::Server");
         match err {
