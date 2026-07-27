@@ -1,0 +1,58 @@
+name: release
+run-name: publish ${{ github.event.client_payload.publication_id }}
+
+on:
+  repository_dispatch:
+    types: [clavenar-protected-publication]
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.client_payload.source_sha }}
+
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          toolchain: 1.97.0
+
+      - name: Verify protected publication input
+        env:
+          COMPONENT_VERSION: ${{ github.event.client_payload.component_version }}
+          RELEASE_REFERENCE: ${{ github.event.client_payload.release_reference }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          test "$GITHUB_ACTOR" = "vanteguardlabs"
+          [[ "$RELEASE_REFERENCE" =~ ^ghcr\.io/clavenar/clavenar-stack-release@sha256:[0-9a-f]{64}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          version="$(sed -n 's/^version = "\\([^"]*\\)"/\\1/p' Cargo.toml | head -1)"
+          test "$version" = "$COMPONENT_VERSION"
+
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Package the exact Rust SDK
+        run: cargo package --locked
+
+      - name: Publish the exact source tag and crate asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ github.event.client_payload.component_version }}
+          SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+              --jq '.object.sha')" = "$SOURCE_SHA"
+            gh release upload "$tag" "target/package/clavenar-sdk-$VERSION.crate" --clobber
+          else
+            gh release create "$tag" --target "$SOURCE_SHA" \
+              --title "$tag — clavenar-sdk" \
+              --notes "Published from the accepted protected Clavenar release. Use this exact tag as a Cargo git dependency." \
+              "target/package/clavenar-sdk-$VERSION.crate"
+          fi

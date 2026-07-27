@@ -6,7 +6,9 @@ endpoints with typed verdicts so an external app doesn't have to
 relearn the wire contract on every integration.
 
 ```bash
-cargo add clavenar-sdk
+cargo add clavenar-sdk \
+  --git https://github.com/clavenar/clavenar-sdk \
+  --tag v0.4.0
 ```
 
 Pairs with [`clavenar-lite`](https://github.com/clavenar/clavenar-lite)
