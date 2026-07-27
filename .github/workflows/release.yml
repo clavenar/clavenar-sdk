@@ -19,6 +19,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: 1.97.0
+          components: rustfmt, clippy
 
       - name: Verify protected publication input
         env:
@@ -29,7 +30,7 @@ jobs:
           test "$GITHUB_ACTOR" = "vanteguardlabs"
           [[ "$RELEASE_REFERENCE" =~ ^ghcr\.io/clavenar/clavenar-stack-release@sha256:[0-9a-f]{64}$ ]]
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-          version="$(sed -n 's/^version = "\\([^"]*\\)"/\\1/p' Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
           test "$version" = "$COMPONENT_VERSION"
 
       - run: cargo fmt --all -- --check
