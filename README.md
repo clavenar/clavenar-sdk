@@ -6,9 +6,16 @@ endpoints with typed verdicts so an external app doesn't have to
 relearn the wire contract on every integration.
 
 ```bash
-cargo add clavenar-sdk \
-  --git https://github.com/clavenar/clavenar-sdk \
-  --tag v0.4.0
+cargo add clavenar-sdk --git https://github.com/clavenar/clavenar-sdk --tag v0.4.0
+```
+
+The exact packaged crate is also attached anonymously to the immutable
+release:
+
+```bash
+curl -fsSLO \
+  https://github.com/clavenar/clavenar-sdk/releases/download/v0.4.0/clavenar-sdk-0.4.0.crate
+tar -tzf clavenar-sdk-0.4.0.crate >/dev/null
 ```
 
 Pairs with [`clavenar-lite`](https://github.com/clavenar/clavenar-lite)
