@@ -16,6 +16,11 @@ jobs:
         with:
           ref: ${{ github.event.client_payload.source_sha }}
 
+      - name: Isolate Rust toolchain state
+        run: |
+          echo "CARGO_HOME=${{ runner.temp }}/cargo-home" >> "$GITHUB_ENV"
+          echo "RUSTUP_HOME=${{ runner.temp }}/rustup-home" >> "$GITHUB_ENV"
+
       - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           toolchain: 1.97.0
