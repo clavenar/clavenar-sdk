@@ -57,7 +57,15 @@ jobs:
               --jq '.object.sha')" = "$SOURCE_SHA"
             gh release upload "$tag" "target/package/clavenar-sdk-$VERSION.crate" --clobber
           else
-            gh release create "$tag" --target "$SOURCE_SHA" \
+            if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" >/dev/null 2>&1; then
+              test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" \
+                --jq '.object.sha')" = "$SOURCE_SHA"
+            else
+              gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+                -f ref="refs/tags/$tag" \
+                -f sha="$SOURCE_SHA" >/dev/null
+            fi
+            gh release create "$tag" \
               --title "$tag — clavenar-sdk" \
               --notes "Published from the accepted protected Clavenar release. Use this exact tag as a Cargo git dependency." \
               "target/package/clavenar-sdk-$VERSION.crate"
