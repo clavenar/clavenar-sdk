@@ -7,6 +7,13 @@ at that version".
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-07-28
+
+### Changed
+
+- Bind the exact external-install documentation to a new immutable source tag
+  and anonymous crate asset.
+
 ## [0.4.0]
 
 ### Added
