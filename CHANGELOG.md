@@ -7,6 +7,15 @@ at that version".
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-05
+
+### Security
+
+- Bound connect and request deadlines plus JSON, text, and binary response
+  bodies across the typed clients.
+- Retire unsafe local policy-pack signing; callers can verify externally signed
+  packs without obtaining an in-process signing primitive.
+
 ## [0.4.1] - 2026-07-28
 
 ### Changed
