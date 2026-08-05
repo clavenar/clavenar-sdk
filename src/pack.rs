@@ -8,11 +8,10 @@
 //! signature commits to every entry transitively, so tampering with any
 //! `.rego` body breaks both its `body_sha256` and the signature.
 //!
-//! Signing rides clavenar-identity's `POST /sign/blob` (audience
-//! `policy-pack`) through [`PackSigner`]; verification is a pure Ed25519
-//! check ([`verify_pack`]) against a key resolved from the issuer JWKS
-//! or an operator-pinned SPKI PEM. No new crypto — the same `ed25519`
-//! primitive the chain signatures use.
+//! The historical policy-pack signer targeted identity's ledger-only
+//! `/sign/blob` contract and is therefore disabled fail-closed. Verification
+//! remains a pure Ed25519 check ([`verify_pack`]) against a key resolved from
+//! the issuer JWKS or an operator-pinned SPKI PEM.
 
 use base64::Engine;
 pub use ed25519_dalek::VerifyingKey;
@@ -164,16 +163,15 @@ pub fn verifying_key_from_jwks(
         .map_err(|e| ClavenarError::InvalidConfig(format!("jwks: invalid ed25519 key: {e}")))
 }
 
-/// Client for clavenar-identity's `POST /sign/blob`, used to sign a pack
-/// manifest digest. Mirrors the ledger's `HttpManifestSigner` but lives
-/// in the SDK so any caller (the CLI today, the console later) shares one
-/// `/sign/blob` client.
+/// Compatibility shell for the retired policy-pack signing client.
+///
+/// Identity's `/sign/blob` endpoint is deliberately ledger-only. Keeping a
+/// network client that supplied an arbitrary caller header made it possible
+/// for callers to believe a pack could be signed when no compatible authority
+/// existed. A future implementation must target a dedicated, versioned
+/// policy-pack capability and use [`crate::HttpProvider`] for verified mTLS.
 #[derive(Debug, Clone)]
-pub struct PackSigner {
-    http: reqwest::Client,
-    base_url: String,
-    caller_spiffe: String,
-}
+pub struct PackSigner;
 
 /// One `/sign/blob` response.
 #[derive(Debug, Clone)]
@@ -184,56 +182,26 @@ pub struct PackSignature {
     pub signed_at: chrono::DateTime<chrono::Utc>,
 }
 
-#[derive(Debug, Serialize)]
-struct SignBlobRequest<'a> {
-    digest_sha256: &'a str,
-    audience: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct SignBlobResponse {
-    signature: String,
-    key_id: String,
-    algorithm: String,
-    signed_at: chrono::DateTime<chrono::Utc>,
-}
-
+#[allow(deprecated)]
 impl PackSigner {
-    pub fn new(base_url: impl Into<String>, caller_spiffe: impl Into<String>) -> Self {
-        Self {
-            http: reqwest::Client::new(),
-            base_url: base_url.into(),
-            caller_spiffe: caller_spiffe.into(),
-        }
+    #[deprecated(
+        note = "policy-pack signing is disabled until identity exposes a dedicated capability"
+    )]
+    pub fn new(_base_url: impl Into<String>, _caller_spiffe: impl Into<String>) -> Self {
+        Self
     }
 
     /// Sign a manifest digest (hex of the 32-byte sha256). The audience
     /// is pinned to [`PACK_AUDIENCE`] so a pack signature can't be
     /// repurposed for the regulatory-export audience.
-    pub async fn sign(&self, digest_sha256_hex: &str) -> Result<PackSignature, ClavenarError> {
-        let url = format!("{}/sign/blob", self.base_url.trim_end_matches('/'));
-        let resp = self
-            .http
-            .post(&url)
-            .header("X-Caller-Spiffe", &self.caller_spiffe)
-            .json(&SignBlobRequest {
-                digest_sha256: digest_sha256_hex,
-                audience: PACK_AUDIENCE,
-            })
-            .send()
-            .await?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            return Err(ClavenarError::Server { status, body });
-        }
-        let parsed: SignBlobResponse = resp.json().await?;
-        Ok(PackSignature {
-            signature_hex: parsed.signature,
-            key_id: parsed.key_id,
-            algorithm: parsed.algorithm,
-            signed_at: parsed.signed_at,
-        })
+    #[deprecated(
+        note = "policy-pack signing is disabled until identity exposes a dedicated capability"
+    )]
+    pub async fn sign(&self, _digest_sha256_hex: &str) -> Result<PackSignature, ClavenarError> {
+        Err(ClavenarError::InvalidConfig(
+            "policy-pack signing is disabled: identity /sign/blob is ledger-only; configure a dedicated identity.sign.policy-pack capability before enabling this operation"
+                .into(),
+        ))
     }
 }
 
@@ -312,6 +280,14 @@ mod tests {
             verify_pack(&m, &"00".repeat(64), &key.verifying_key()),
             PackVerifyOutcome::Unsigned
         );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn legacy_pack_signer_fails_closed_without_network_io() {
+        let signer = PackSigner::new("http://127.0.0.1:1", "spoofed-caller");
+        let error = signer.sign(&"00".repeat(32)).await.unwrap_err();
+        assert!(matches!(error, ClavenarError::InvalidConfig(_)));
     }
 
     #[test]

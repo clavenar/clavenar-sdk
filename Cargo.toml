@@ -17,7 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 # rustls-tls (not native-tls) so a downstream `cargo install` on a fresh
 # box doesn't need a system openssl. Same combo as clavenar-lite.
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 url = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::ClavenarError;
 use crate::http::{
     HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
-    percent_encode,
+    percent_encode, read_text_limited,
 };
 
 /// Agent lifecycle state per clavenar-specs/TECH_SPEC.md#agent-onboarding-wao §3.2. Wire form is the
@@ -851,7 +851,7 @@ impl AgentsClient {
         }
         let response = request.send().await?;
         let status = response.status();
-        let body = response.text().await?;
+        let body = read_text_limited(response).await?;
         decode_response(status, body)
     }
 
@@ -949,7 +949,7 @@ impl AgentsClient {
         }
         let response = request.send().await?;
         let status = response.status();
-        let body = response.text().await?;
+        let body = read_text_limited(response).await?;
         decode_response(status, body)
     }
 
@@ -998,7 +998,7 @@ impl AgentsClient {
         }
         let resp = req.send().await?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_text_limited(resp).await?;
         decode_response(status, body)
     }
 
@@ -1018,7 +1018,7 @@ impl AgentsClient {
         }
         let resp = req.send().await?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_text_limited(resp).await?;
         decode_response(status, body)
     }
 }

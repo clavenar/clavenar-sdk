@@ -23,6 +23,7 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::http::read_text_limited;
 use crate::{Auth, ClavenarClient, ClavenarError};
 
 type ToolExecutorFuture =
@@ -1059,7 +1060,7 @@ impl ClavenarClient {
         }
         let response = request.send().await?;
         let status = response.status();
-        let raw = response.text().await?;
+        let raw = read_text_limited(response).await?;
         if status == StatusCode::ACCEPTED {
             let pending: PendingAuthorization = serde_json::from_str(&raw)?;
             validate_pending_authorization(&pending, idempotency_id, body)?;
@@ -1314,7 +1315,7 @@ impl ClavenarClient {
         }
         let response = request.send().await?;
         let status = response.status();
-        let raw = response.text().await?;
+        let raw = read_text_limited(response).await?;
         if status != StatusCode::OK && status != StatusCode::CREATED {
             return execution_http_error(status, raw);
         }

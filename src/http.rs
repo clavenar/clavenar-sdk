@@ -17,13 +17,25 @@
 
 use std::fmt::Debug;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use reqwest::{Client, StatusCode};
+use reqwest::{Client, Response, StatusCode};
 use url::Url;
 
 use crate::ClavenarError;
 
 static PROCESS_HTTP_PROVIDER: OnceLock<Arc<dyn HttpProvider>> = OnceLock::new();
+
+/// Conservative defaults for ordinary request/response APIs. Streaming APIs
+/// return the raw response before this deadline and retain their own lifecycle.
+pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+pub(crate) const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum decoded JSON/text response retained by a typed SDK call.
+pub(crate) const DEFAULT_RESPONSE_BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Maximum binary export retained by endpoints that intentionally return bytes.
+pub(crate) const BINARY_RESPONSE_BODY_LIMIT: usize = 64 * 1024 * 1024;
+const _: () = assert!(DEFAULT_RESPONSE_BODY_LIMIT > 0);
+const _: () = assert!(BINARY_RESPONSE_BODY_LIMIT >= DEFAULT_RESPONSE_BODY_LIMIT);
 
 /// Source of a `reqwest::Client` for a per-request hot path.
 ///
@@ -75,9 +87,45 @@ pub(crate) fn default_provider() -> Result<Arc<dyn HttpProvider>, ClavenarError>
         return Ok(Arc::clone(provider));
     }
     let client = Client::builder()
+        .connect_timeout(DEFAULT_CONNECT_TIMEOUT)
+        .timeout(DEFAULT_REQUEST_TIMEOUT)
         .build()
         .map_err(ClavenarError::Transport)?;
     Ok(Arc::new(StaticHttpClient::new(client)))
+}
+
+/// Read an HTTP response without allowing an untrusted peer to grow the
+/// caller's memory without bound. `content-length` is checked first, then the
+/// streamed body is capped as it arrives so chunked responses are covered too.
+pub(crate) async fn read_body_limited(
+    mut response: Response,
+    limit: usize,
+) -> Result<Vec<u8>, ClavenarError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(ClavenarError::ResponseTooLarge { limit });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let next_len = body
+            .len()
+            .checked_add(chunk.len())
+            .ok_or(ClavenarError::ResponseTooLarge { limit })?;
+        if next_len > limit {
+            return Err(ClavenarError::ResponseTooLarge { limit });
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+pub(crate) async fn read_text_limited(response: Response) -> Result<String, ClavenarError> {
+    let body = read_body_limited(response, DEFAULT_RESPONSE_BODY_LIMIT).await?;
+    String::from_utf8(body).map_err(|error| {
+        ClavenarError::InvalidResponse(format!("response body is not UTF-8: {error}"))
+    })
 }
 
 /// Install the process-wide provider used by all subsequent default client
@@ -215,5 +263,11 @@ mod tests {
         assert_eq!(r.unwrap(), Body { ok: true });
         let r: Result<Body, _> = decode_response(StatusCode::CREATED, r#"{"ok":false}"#.into());
         assert_eq!(r.unwrap(), Body { ok: false });
+    }
+
+    #[test]
+    fn default_transport_deadlines_are_non_zero() {
+        assert!(!DEFAULT_CONNECT_TIMEOUT.is_zero());
+        assert!(!DEFAULT_REQUEST_TIMEOUT.is_zero());
     }
 }

@@ -19,7 +19,9 @@ use serde_json::{Value, json};
 
 use crate::ClavenarError;
 use crate::execution::RegisteredToolExecutor;
-use crate::http::{HttpProvider, StaticHttpClient, default_provider, parse_base_url};
+use crate::http::{
+    HttpProvider, StaticHttpClient, default_provider, parse_base_url, read_text_limited,
+};
 use crate::{
     DurableExecutionStore, EffectLookupOutcome, EffectLookupRequest, ExecutionEffect,
     ToolExecutionRequest,
@@ -139,7 +141,7 @@ impl ClavenarClient {
 
         let resp = req.send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
+        let raw = read_text_limited(resp).await?;
 
         match status {
             StatusCode::OK => decode_json_body(&raw),

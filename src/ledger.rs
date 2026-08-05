@@ -32,7 +32,8 @@ use uuid::Uuid;
 
 use crate::ClavenarError;
 use crate::http::{
-    HttpProvider, StaticHttpClient, default_provider, parse_base_url, percent_encode,
+    BINARY_RESPONSE_BODY_LIMIT, HttpProvider, StaticHttpClient, default_provider, parse_base_url,
+    percent_encode, read_body_limited, read_text_limited,
 };
 
 /// One row from the ledger's hash chain. Fields and ordering mirror
@@ -1647,7 +1648,7 @@ impl LedgerClient {
             .map_err(|e| ClavenarError::InvalidConfig(format!("join export: {e}")))?;
         let resp = self.http.client().post(endpoint).send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
+        let raw = read_text_limited(resp).await?;
         if status == StatusCode::OK {
             serde_json::from_str(&raw).map_err(ClavenarError::Decode)
         } else {
@@ -1727,11 +1728,10 @@ impl LedgerClient {
         let resp = req.send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_text_limited(resp).await?;
             return Err(ClavenarError::Server { status, body });
         }
-        let bytes = resp.bytes().await?;
-        Ok(bytes.to_vec())
+        read_body_limited(resp, BINARY_RESPONSE_BODY_LIMIT).await
     }
 
     /// `POST /compliance/evidence?from=…&to=…` — live EU AI Act Article
@@ -1773,7 +1773,7 @@ impl LedgerClient {
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().post(endpoint).send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
+        let raw = read_text_limited(resp).await?;
         if status == StatusCode::OK {
             serde_json::from_str(&raw).map_err(ClavenarError::Decode)
         } else {
@@ -1935,7 +1935,7 @@ impl LedgerClient {
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().post(endpoint).json(body).send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
+        let raw = read_text_limited(resp).await?;
         if status.is_success() {
             let raw = if raw.trim().is_empty() {
                 "null".to_string()
@@ -1961,7 +1961,7 @@ impl LedgerClient {
             .map_err(|e| ClavenarError::InvalidConfig(format!("join {path}: {e}")))?;
         let resp = self.http.client().get(endpoint).send().await?;
         let status = resp.status();
-        let raw = resp.text().await?;
+        let raw = read_text_limited(resp).await?;
         if status == StatusCode::OK {
             serde_json::from_str(&raw).map_err(ClavenarError::Decode)
         } else {

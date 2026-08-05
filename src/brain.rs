@@ -20,6 +20,7 @@ use url::Url;
 use crate::ClavenarError;
 use crate::http::{
     HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
+    read_text_limited,
 };
 
 /// Wire shape for `POST /explain-pattern`. The PII contract here is
@@ -99,7 +100,7 @@ impl BrainClient {
         }
         let resp = request.send().await?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_text_limited(resp).await?;
         decode_response(status, body)
     }
 }

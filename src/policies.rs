@@ -32,7 +32,7 @@ use uuid::Uuid;
 use crate::ClavenarError;
 use crate::http::{
     HttpProvider, StaticHttpClient, decode_response, default_provider, parse_base_url,
-    percent_encode,
+    percent_encode, read_text_limited,
 };
 
 /// One row of the `policies` table — current state of a managed
@@ -601,7 +601,7 @@ impl PoliciesClient {
         if status.is_success() {
             Ok(())
         } else {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_text_limited(resp).await?;
             Err(ClavenarError::Server { status, body })
         }
     }
@@ -901,7 +901,7 @@ impl PoliciesClient {
         }
         let resp = req.send().await?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_text_limited(resp).await?;
         decode_response(status, body)
     }
 
@@ -917,7 +917,7 @@ impl PoliciesClient {
         }
         let resp = req.send().await?;
         let status = resp.status();
-        let body = resp.text().await?;
+        let body = read_text_limited(resp).await?;
         decode_response(status, body)
     }
 }

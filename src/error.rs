@@ -90,6 +90,15 @@ pub enum ClavenarError {
     #[error(transparent)]
     Decode(#[from] serde_json::Error),
 
+    /// A peer returned more bytes than the endpoint is willing to retain.
+    #[error("response body exceeds the {limit}-byte SDK limit")]
+    ResponseTooLarge { limit: usize },
+
+    /// The response was bounded but could not be interpreted as the required
+    /// wire representation (for example, a text response was not UTF-8).
+    #[error("invalid response: {0}")]
+    InvalidResponse(String),
+
     /// A durable effect attempt began, but its exact result is not trusted.
     /// This handle cannot authorize another executor invocation; pass it to
     /// `ClavenarClient::reconcile_uncertain_effect` or surface it for human

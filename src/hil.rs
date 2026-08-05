@@ -19,6 +19,7 @@ use uuid::Uuid;
 use crate::ClavenarError;
 use crate::http::{
     HttpProvider, StaticHttpClient, default_provider, parse_base_url, percent_encode,
+    read_text_limited,
 };
 
 /// Cookie name HIL's WebAuthn middleware reads on `/decide/{id}`.
@@ -786,7 +787,7 @@ impl HilClient {
         let resp = self.apply_tenant_scope(req).send().await?;
         let status = resp.status();
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = read_text_limited(resp).await?;
             return Err(ClavenarError::Server { status, body });
         }
         Ok(resp)
@@ -906,7 +907,7 @@ impl HilClient {
         let status = resp.status();
 
         // Capture every Set-Cookie value before we consume the body —
-        // `resp.text().await` consumes self, and `headers()` borrows
+        // Reading the response consumes self, and `headers()` borrows
         // self, so we must clone the headers we care about up-front.
         let set_cookies: Vec<String> = resp
             .headers()
@@ -915,7 +916,7 @@ impl HilClient {
             .filter_map(|v| v.to_str().ok().map(str::to_string))
             .collect();
 
-        let text = resp.text().await?;
+        let text = read_text_limited(resp).await?;
         // Auth endpoints return JSON on success and a plain-text
         // diagnostic on error. The body is surfaced verbatim either
         // way; the caller maps a non-2xx into a 4xx for the browser.
@@ -1043,7 +1044,7 @@ async fn read_json<T: serde::de::DeserializeOwned>(
     resp: reqwest::Response,
 ) -> Result<T, ClavenarError> {
     let status = resp.status();
-    let body = resp.text().await?;
+    let body = read_text_limited(resp).await?;
     if !status.is_success() {
         return Err(ClavenarError::Server { status, body });
     }
