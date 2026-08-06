@@ -14,6 +14,8 @@ cargo build
 cargo test                                   # unit tests + tests/ (axum 0.8 mock servers)
 cargo clippy --all-targets -- -D warnings
 cargo deny check all                         # advisories / licenses / bans / sources
+cargo cyclonedx --format json --describe crate
+cargo package --locked                       # protected release preflight
 ```
 Host-build caveat: `target/` may be root-owned from prior docker builds —
 pass `CARGO_TARGET_DIR=/tmp/clavenar-sdk-target` when building on the host.
@@ -39,6 +41,11 @@ each taking a base URL (path prefix preserved, trailing slash optional):
   compatibility client; not a production external integration surface.
 - `src/sim.rs` — `SimClient`: simulator dev admin (`/status`, `/multiplier`, `/running`, `/auto-decide`, `/agents`).
 - `src/hil.rs` — `HilClient`: pending queue reads (plain + demo-session-scoped), `/decide/{id}` (via `HilDecideCredential`: session cookie / Console bearer plus typed session claim / demo-session cookie), decision-link verify, assign/incident patches, notifications, approvals stats, `/pending/stream` SSE (raw `reqwest::Response`), identities link/unlink, and the tenant-scoped lifecycle owner effect. Non-2xx → `Server{status,body}` so consumers keep per-status mappings (console relies on this).
+- `src/execution.rs` — exact SDK-governed authorization, durable
+  intent/effect/completion state, signed receipts, outbox delivery, and
+  uncertain-effect recovery.
+- `src/secure_transport.rs` — atomic reload of a complete mTLS/token/deadline/
+  proxy client snapshot; implements `HttpProvider`.
 - `src/pack.rs` — Policy-Exchange signed-pack manifest + Ed25519 verify (`verify_pack`, JWKS / SPKI-PEM key loaders).
 - `src/http.rs` — `HttpProvider` trait, `StaticHttpClient`, `default_provider`, `parse_base_url`, `decode_response` (shared non-proxy status dispatch). Injection point for custom timeouts / TLS roots / hot-reloaded creds.
 - `src/error.rs` — `ClavenarError`. `tests/` — integration tests against axum mock servers. `docs/SEQUENCES.md` — five primary client-path diagrams. `docs/ENDPOINTS.md` — per-client method → HTTP route → return-type table (the route reference).
@@ -48,14 +55,16 @@ each taking a base URL (path prefix preserved, trailing slash optional):
 - **Formatting is an owning-CI gate.** Run `cargo fmt --all -- --check`
   before pushing Rust changes; CI runs it before check, test, and clippy.
 
-- After adding or updating a feature, also update the relevant `MANUAL_TESTS*` file(s) when needed.
-
 - **`rustls-tls`, not native-tls** (reqwest `default-features = false`), so a downstream `cargo install` on a fresh box needs no system OpenSSL. Same combo as clavenar-lite — keep it.
 - **Base-URL prefix is preserved** across every client: `http://gw/clavenar` lands `/clavenar/mcp`, `/clavenar/audit/...`, etc. Trailing slash optional; `parse_base_url` normalizes. Don't strip or re-root the path.
 - **One 403 envelope, one error variant.** A structured or non-JSON 403 both surface as `ClavenarError::Veto` (non-JSON → structured fields empty, body on `raw`). Never return `Decode` for a 403 — callers must not special-case the server edition.
 - **`ClavenarError` and `Auth` are `#[non_exhaustive]`** — new variants (mTLS / OIDC / SPIFFE auth) are non-breaking; consumer match arms need `_ => ...`.
 - **`correlation_id` is `#[serde(default)]`** on `LedgerEntry` — pre-correlation-id rows deserialize cleanly to `None`. Don't make it required.
 - **Clients are cheap to clone** (inner `Arc<dyn HttpProvider>`). Add new shared state behind the `Arc`, not by value.
+- **Decision selection never grants effect retries.** SDK-governed execution
+  persists exact intent and single-use authorization before the effect, records
+  completion and signed receipt durably, and surfaces uncertain state instead
+  of automatically re-executing.
 - **`SimClient` requires an authenticated transport outside local fixtures.** Inject an
   mTLS-capable [`HttpProvider`] whose workload identity is authorized by the simulator;
   network placement alone is not authorization and the control listener must never be
