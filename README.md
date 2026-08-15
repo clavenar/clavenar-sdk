@@ -6,7 +6,7 @@ endpoints with typed verdicts so an external app doesn't have to
 relearn the wire contract on every integration.
 
 ```bash
-cargo add clavenar-sdk --git https://github.com/clavenar/clavenar-sdk --tag v0.4.2
+cargo add clavenar-sdk --git https://github.com/clavenar/clavenar-sdk --tag v1.0.0
 ```
 
 The exact packaged crate is also attached anonymously to the immutable
@@ -14,8 +14,8 @@ release:
 
 ```bash
 curl -fsSLO \
-  https://github.com/clavenar/clavenar-sdk/releases/download/v0.4.2/clavenar-sdk-0.4.2.crate
-tar -tzf clavenar-sdk-0.4.2.crate >/dev/null
+  https://github.com/clavenar/clavenar-sdk/releases/download/v1.0.0/clavenar-sdk-1.0.0.crate
+tar -tzf clavenar-sdk-1.0.0.crate >/dev/null
 ```
 
 Pairs with [`clavenar-lite`](https://github.com/clavenar/clavenar-lite)
@@ -110,7 +110,7 @@ The exact invariant set is
 The selector/server-execution separation is fixed by
 [`contracts/side-effect-free-decision-v1.json`](contracts/side-effect-free-decision-v1.json):
 the SDK always selects the side-effect-free decision route and never falls back
-to unselected `/mcp`. Proxy 0.5.0 and Lite 0.9.0 reject unselected tool calls
+to unselected `/mcp`. Proxy 1.0.0 and Lite 1.0.0 reject unselected tool calls
 with HTTP 426 before effects. Follow the public migration guide at
 <https://clavenar.com/docs/sdk-migration/> before upgrading a gateway.
 

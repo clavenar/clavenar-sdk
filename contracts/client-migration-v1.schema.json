@@ -16,9 +16,9 @@
       "additionalProperties": false,
       "required": ["proxy", "lite", "rust", "typescript", "python", "go", "java", "dotnet"],
       "properties": {
-        "proxy": {"const": "0.5.0"},
-        "lite": {"const": "0.9.0"},
-        "rust": {"const": "0.3.0"},
+        "proxy": {"const": "1.0.0"},
+        "lite": {"const": "1.0.0"},
+        "rust": {"const": "1.0.0"},
         "typescript": {"const": "1.5.0"},
         "python": {"const": "1.4.0"},
         "go": {"const": "1.3.0"},

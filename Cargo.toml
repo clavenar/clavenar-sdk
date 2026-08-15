@@ -1,6 +1,6 @@
 [package]
 name = "clavenar-sdk"
-version = "0.4.2"
+version = "1.0.0"
 edition = "2024"
 authors = ["Vanteguard Labs <vanteguardlabs@gmail.com>"]
 description = "Async Rust client for Clavenar — wraps the proxy POST /mcp surface and the ledger audit/verify endpoints with typed verdicts."

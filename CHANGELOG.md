@@ -7,6 +7,13 @@ at that version".
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-15
+
+### Changed
+
+- Establish `1.0.0` as the stable release baseline for the existing typed
+  client, governed-execution, and protected-publication surfaces.
+
 ## [0.4.2] - 2026-08-05
 
 ### Security

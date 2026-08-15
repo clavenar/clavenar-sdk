@@ -1725,7 +1725,7 @@ mod tests {
         let contract: Value = serde_json::from_str(CLIENT_MIGRATION_CONTRACT).unwrap();
         let schema: Value = serde_json::from_str(CLIENT_MIGRATION_SCHEMA).unwrap();
         assert_eq!(contract["contract"], "clavenar.client-migration/v1");
-        assert_eq!(contract["minimumSafeVersions"]["rust"], "0.3.0");
+        assert_eq!(contract["minimumSafeVersions"]["rust"], "1.0.0");
         assert_eq!(contract["legacyRejection"]["httpStatus"], 426);
         assert_eq!(contract["legacyRejection"]["toolEffectCount"], 0);
         assert_eq!(
