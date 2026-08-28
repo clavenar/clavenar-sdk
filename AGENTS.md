@@ -17,6 +17,8 @@ cargo deny check all                         # advisories / licenses / bans / so
 cargo cyclonedx --format json --describe crate
 cargo package --locked                       # protected release preflight
 ```
+`cargo package --locked` writes generated output under `target/package/`; use
+it only for package/release changes and do not treat that tree as source.
 Host-build caveat: `target/` may be root-owned from prior docker builds —
 pass `CARGO_TARGET_DIR=/tmp/clavenar-sdk-target` when building on the host.
 
@@ -74,6 +76,9 @@ each taking a base URL (path prefix preserved, trailing slash optional):
   persists exact intent and single-use authorization before the effect, records
   completion and signed receipt durably, and surfaces uncertain state instead
   of automatically re-executing.
+- **Public client changes require consumer checks.** Validate affected call
+  sites in `clavenar-console` and `clavenar-ctl` as well as this crate before
+  changing a constructor, error mapping, or shared wire type.
 - **`SimClient` requires an authenticated transport outside local fixtures.** Inject an
   mTLS-capable [`HttpProvider`] whose workload identity is authorized by the simulator;
   network placement alone is not authorization and the control listener must never be
@@ -91,4 +96,6 @@ Rust house rules:
 - Commit subjects must start with a lowercase letter.
 
 ## Pointers
-README.md · SECURITY.md · docs/SEQUENCES.md · docs/ENDPOINTS.md
+
+[README](README.md) · [security policy](SECURITY.md) ·
+[sequence diagrams](docs/SEQUENCES.md) · [endpoint reference](docs/ENDPOINTS.md).
